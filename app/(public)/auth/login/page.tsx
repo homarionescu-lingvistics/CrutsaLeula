@@ -13,11 +13,13 @@ export default function LoginPage({ searchParams }: Props) {
   const hint = searchParams.error ? ERRORS[searchParams.error] ?? null : null;
 
   return (
-    <Section
-      title="Intră în cont"
-      description="Doar număr de telefon — fără parolă."
-    >
-      <PhoneLoginForm errorHint={hint} />
-    </Section>
+    <div className="auth-login">
+      <Section
+        title="Intră în cont"
+        description="Doar număr de telefon — fără parolă."
+      >
+        <PhoneLoginForm errorHint={hint} />
+      </Section>
+    </div>
   );
 }

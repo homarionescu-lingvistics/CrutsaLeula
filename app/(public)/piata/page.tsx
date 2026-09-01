@@ -16,7 +16,7 @@ export default async function PiataPage() {
   const products = listings.filter((l) => l.type === "product" || l.type === "service");
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 piata-tab">
       <header className="space-y-2">
         <h1 className="text-2xl font-bold text-zinc-900">Mânzare & Prăvălii 🧺</h1>
         <p className="text-sm text-zinc-500">Produse, recoltă, servicii locale.</p>
