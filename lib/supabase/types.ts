@@ -72,6 +72,17 @@ export type InvestmentOpportunity = {
   updated_at: string;
 };
 
+export type BrandRomanitate = {
+  id: string;
+  cod_bare_prefix: string | null;
+  cui: string | null;
+  nume_brand: string;
+  categorie_tip: 1 | 2 | 3 | 4 | 5;
+  procent_retentie_ron: number | null;
+  brand_alternativ_id: string | null;
+  created_at: string;
+};
+
 export type InvestmentSubscription = {
   id: string;
   opportunity_id: string;
@@ -277,6 +288,21 @@ export type Database = {
           reason?: string;
           expires_at?: string | null;
         };
+        Relationships: [];
+      };
+      branduri_romanitate: {
+        Row: BrandRomanitate;
+        Insert: {
+          id?: string;
+          cod_bare_prefix?: string | null;
+          cui?: string | null;
+          nume_brand: string;
+          categorie_tip: 1 | 2 | 3 | 4 | 5;
+          procent_retentie_ron?: number | null;
+          brand_alternativ_id?: string | null;
+          created_at?: string;
+        };
+        Update: Partial<Omit<BrandRomanitate, "id">>;
         Relationships: [];
       };
       clearing_offers: {

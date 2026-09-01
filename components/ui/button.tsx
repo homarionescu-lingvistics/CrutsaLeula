@@ -11,8 +11,8 @@ export function Button({
 }: Props) {
   const styles =
     variant === "primary"
-      ? "bg-emerald-500 text-slate-950 hover:bg-emerald-400"
-      : "bg-transparent text-slate-200 hover:bg-slate-800";
+      ? "bg-emerald-500 text-white hover:bg-emerald-400"
+      : "bg-transparent text-zinc-700 hover:bg-zinc-200";
 
   return (
     <button
