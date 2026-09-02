@@ -131,7 +131,8 @@ export async function resendVerificationEmail(email?: string) {
 
   return { 
     success: true, 
-    message: "Un nou link de verificare a fost generat și trimis pe email." 
+    message: "Un nou link de verificare a fost generat și trimis pe email.",
+    error: null as string | null
   };
 }
 
