@@ -50,15 +50,7 @@ function CameraButton({
   }
 
   return (
-    <>
-      <button
-        type="button"
-        aria-label={label}
-        onClick={() => inputRef.current?.click()}
-        className={`inline-flex items-center justify-center rounded-xl border border-zinc-300 bg-white px-3 py-2.5 text-lg shadow-sm transition hover:bg-zinc-50 ${className}`}
-      >
-        📷
-      </button>
+    <label aria-label={label} className={`shrink-0 cursor-pointer ${className}`}>
       <input
         ref={inputRef}
         type="file"
@@ -67,7 +59,10 @@ function CameraButton({
         className="hidden"
         onChange={(event) => void handleChange(event)}
       />
-    </>
+      <span className="inline-flex items-center justify-center rounded-lg bg-zinc-700 p-3 text-xs font-bold leading-tight text-white shadow-md">
+        📷 FOTO RAFT
+      </span>
+    </label>
   );
 }
 
@@ -330,42 +325,34 @@ export function ProduseTabPanel() {
           value={receiptText}
           onChange={(e) => setReceiptText(e.target.value)}
         />
-        <div className="flex gap-2">
-          <label className="flex-1">
-            <span className="sr-only">Fă poză la Bon</span>
-            <input
-              type="file"
-              accept="image/*"
-              capture="environment"
-              className="hidden"
-              id="receipt-camera-input"
-              onChange={(event) => {
-                const file = event.target.files?.[0];
-                event.target.value = "";
-                if (!file) return;
-                setOcrLoading(true);
-                void runOcrOnImageFile(file)
-                  .then((text) => handleReceiptOcr(text))
-                  .finally(() => setOcrLoading(false));
-              }}
-            />
-            <Button
-              type="button"
-              className="w-full bg-emerald-700 hover:bg-emerald-800"
-              onClick={() => document.getElementById("receipt-camera-input")?.click()}
-            >
-              📷 Fă poză la Bon
-            </Button>
-          </label>
-          <Button
-            type="button"
-            variant="ghost"
-            className="border border-emerald-300 bg-white text-zinc-900"
-            onClick={() => void submitReceiptBonus(receiptText)}
-          >
-            Validează
-          </Button>
-        </div>
+        <label className="block w-full cursor-pointer">
+          <input
+            type="file"
+            accept="image/*"
+            capture="environment"
+            className="hidden"
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              event.target.value = "";
+              if (!file) return;
+              setOcrLoading(true);
+              void runOcrOnImageFile(file)
+                .then((text) => handleReceiptOcr(text))
+                .finally(() => setOcrLoading(false));
+            }}
+          />
+          <span className="flex w-full items-center justify-center rounded-xl bg-emerald-600 p-4 text-sm font-bold text-white shadow-md">
+            📸 FĂ POZĂ LA BON (CAMERĂ)
+          </span>
+        </label>
+        <Button
+          type="button"
+          variant="ghost"
+          className="w-full border border-emerald-300 bg-white text-zinc-900"
+          onClick={() => void submitReceiptBonus(receiptText)}
+        >
+          Validează bonul
+        </Button>
         {bonusMsg ? (
           <p className={`text-sm ${bonusMsg.startsWith("+") ? "text-emerald-800" : "text-zinc-700"}`}>
             {bonusMsg}

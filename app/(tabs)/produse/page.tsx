@@ -1,5 +1,1 @@
-import { ProduseTabPanel } from "@/components/produse/produse-tab-panel";
-
-export default function ProdusePage() {
-  return <ProduseTabPanel />;
-}
+export { ProduseTabPanel as default } from "@/components/produse/produse-tab-panel";
