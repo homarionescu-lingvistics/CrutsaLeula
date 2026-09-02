@@ -10,6 +10,8 @@ export type Profile = {
   cui_number: string | null;
   is_verified_sme: boolean;
   ron_local_balance: number;
+  koson_balance: number;
+  xp_points: number;
   phone: string | null;
   trust_score: number;
   created_at: string;
@@ -108,6 +110,8 @@ export type Database = {
           cui_number?: string | null;
           is_verified_sme?: boolean;
           ron_local_balance?: number;
+          koson_balance?: number;
+          xp_points?: number;
           phone?: string | null;
           trust_score?: number;
           created_at?: string;
@@ -119,6 +123,8 @@ export type Database = {
           cui_number?: string | null;
           is_verified_sme?: boolean;
           ron_local_balance?: number;
+          koson_balance?: number;
+          xp_points?: number;
           phone?: string | null;
           trust_score?: number;
         };
