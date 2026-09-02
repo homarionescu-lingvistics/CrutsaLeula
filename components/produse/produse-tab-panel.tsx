@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { BrandRomanitate } from "@/lib/supabase/types";
 import type { WorthItAlternative } from "@/lib/produse/trip-worth";
 import { extractSearchTermsFromOcr, runOcrOnImageFile } from "@/lib/produse/ocr-client";
@@ -21,50 +21,6 @@ type BrandSearchPayload = {
   results: BrandRomanitate[];
   alternatives: Record<string, BrandRomanitate | null>;
 };
-
-function CameraButton({
-  label,
-  onText,
-  onBusy,
-  className = "",
-}: {
-  label: string;
-  onText: (text: string) => void | Promise<void>;
-  onBusy?: (busy: boolean) => void;
-  className?: string;
-}) {
-  const inputRef = useRef<HTMLInputElement>(null);
-
-  async function handleChange(event: React.ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
-    event.target.value = "";
-    if (!file) return;
-
-    onBusy?.(true);
-    try {
-      const text = await runOcrOnImageFile(file);
-      await onText(text);
-    } finally {
-      onBusy?.(false);
-    }
-  }
-
-  return (
-    <label aria-label={label} className={`shrink-0 cursor-pointer ${className}`}>
-      <input
-        ref={inputRef}
-        type="file"
-        accept="image/*"
-        capture="environment"
-        className="hidden"
-        onChange={(event) => void handleChange(event)}
-      />
-      <span className="inline-flex items-center justify-center rounded-lg bg-zinc-700 p-3 text-xs font-bold leading-tight text-white shadow-md">
-        📷 FOTO RAFT
-      </span>
-    </label>
-  );
-}
 
 export function ProduseTabPanel() {
   const [query, setQuery] = useState("");
@@ -237,25 +193,37 @@ export function ProduseTabPanel() {
         title="Caută sau fotografiază raftul"
         description="OCR pe etichetă → carduri Romanitate Tip 1–5"
       >
-        <div className="flex items-end gap-2">
-          <div className="min-w-0 flex-1">
-            <Input
-              label="Caută produs (nume sau cod)"
-              placeholder="ex: milka, orez, 998636"
-              value={query}
-              onChange={(e) => {
-                setQuery(e.target.value);
-                void runSearch(e.target.value);
-              }}
-            />
-          </div>
-          <CameraButton
-            label="Fotografiază produsul de la raft"
-            onBusy={setOcrLoading}
-            onText={handleShelfOcr}
-            className="mb-0.5"
-          />
-        </div>
+        <Input
+          label="Caută produs (nume sau cod de bare)"
+          placeholder="ex: milka, orez, 998636"
+          value={query}
+          onChange={(e) => {
+            setQuery(e.target.value);
+            void runSearch(e.target.value);
+          }}
+        />
+        <input
+          id="product-camera-input"
+          type="file"
+          accept="image/*"
+          capture="environment"
+          className="hidden"
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            event.target.value = "";
+            if (!file) return;
+            setOcrLoading(true);
+            void runOcrOnImageFile(file)
+              .then((text) => handleShelfOcr(text))
+              .finally(() => setOcrLoading(false));
+          }}
+        />
+        <label
+          htmlFor="product-camera-input"
+          className="mt-2 flex w-full cursor-pointer items-center justify-center gap-2 rounded-lg bg-zinc-800 p-3 font-bold text-white shadow-sm hover:bg-zinc-700"
+        >
+          <span>📷 FOTO RAFT / PRODUS</span>
+        </label>
 
         {geo.status === "loading" || ocrLoading ? (
           <p className="text-sm text-zinc-600">
@@ -325,25 +293,27 @@ export function ProduseTabPanel() {
           value={receiptText}
           onChange={(e) => setReceiptText(e.target.value)}
         />
-        <label className="block w-full cursor-pointer">
-          <input
-            type="file"
-            accept="image/*"
-            capture="environment"
-            className="hidden"
-            onChange={(event) => {
-              const file = event.target.files?.[0];
-              event.target.value = "";
-              if (!file) return;
-              setOcrLoading(true);
-              void runOcrOnImageFile(file)
-                .then((text) => handleReceiptOcr(text))
-                .finally(() => setOcrLoading(false));
-            }}
-          />
-          <span className="flex w-full items-center justify-center rounded-xl bg-emerald-600 p-4 text-sm font-bold text-white shadow-md">
-            📸 FĂ POZĂ LA BON (CAMERĂ)
-          </span>
+        <input
+          id="receipt-camera-input"
+          type="file"
+          accept="image/*"
+          capture="environment"
+          className="hidden"
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            event.target.value = "";
+            if (!file) return;
+            setOcrLoading(true);
+            void runOcrOnImageFile(file)
+              .then((text) => handleReceiptOcr(text))
+              .finally(() => setOcrLoading(false));
+          }}
+        />
+        <label
+          htmlFor="receipt-camera-input"
+          className="mt-2 flex w-full cursor-pointer items-center justify-center gap-2 rounded-xl bg-emerald-600 p-4 font-bold text-white shadow-md hover:bg-emerald-500"
+        >
+          <span>📸 FĂ POZĂ LA BON (DESCHIDE CAMERĂ)</span>
         </label>
         <Button
           type="button"
