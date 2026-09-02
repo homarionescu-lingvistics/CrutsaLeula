@@ -27,9 +27,9 @@ export async function buildWorthItAlternatives(
   if (!rows.length) return [];
 
   const coordsByStore = new Map<number, StoreCoords>();
-  const storeIds = [
-    ...new Set(rows.map((row) => row.store_id).filter((id): id is number => id != null)),
-  ];
+  const storeIds = Array.from(
+    new Set(rows.map((row) => row.store_id).filter((id): id is number => id != null))
+  );
 
   await Promise.all(
     storeIds.map(async (storeId) => {
@@ -53,7 +53,7 @@ export async function buildWorthItAlternatives(
 
   const alternatives: WorthItAlternative[] = [];
 
-  for (const [productId, productRows] of byProduct) {
+  for (const [productId, productRows] of Array.from(byProduct.entries())) {
     const pricedRows = productRows.filter((row) => row.store_id != null);
     if (pricedRows.length < 2) continue;
 
