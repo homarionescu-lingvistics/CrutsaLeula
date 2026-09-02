@@ -9,6 +9,7 @@ import {
   geminiScanProduct,
   geminiScanReceipt,
 } from "@/lib/piata/gemini-scan";
+import { getGoogleAccessTokenForScan } from "@/lib/auth/google-token";
 import { buildWorthItAlternatives } from "@/lib/produse/trip-worth";
 import type { BrandRomanitate } from "@/lib/supabase/types";
 
@@ -186,9 +187,24 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Lipsește imaginea." }, { status: 400 });
   }
 
+  const googleAuth = await getGoogleAccessTokenForScan();
+  if (!googleAuth) {
+    return NextResponse.json(
+      {
+        error: "Autentifică-te cu Google pentru a scana. Contul tău Google acoperă cota AI.",
+        needsAuth: true,
+      },
+      { status: 401 }
+    );
+  }
+
   try {
     if (scan === "product") {
-      const productScan = await geminiScanProduct(imageBase64, mimeType);
+      const productScan = await geminiScanProduct(
+        imageBase64,
+        mimeType,
+        googleAuth.token
+      );
       const searchPayload = await runBrandSearch(productScan.brand, lat, lng);
       return NextResponse.json({
         ...productScan,
@@ -197,7 +213,11 @@ export async function POST(request: Request) {
     }
 
     if (scan === "receipt") {
-      const receiptScan = await geminiScanReceipt(imageBase64, mimeType);
+      const receiptScan = await geminiScanReceipt(
+        imageBase64,
+        mimeType,
+        googleAuth.token
+      );
       return NextResponse.json({
         ...receiptScan,
         receiptText: buildReceiptText(
@@ -210,10 +230,13 @@ export async function POST(request: Request) {
 
     return NextResponse.json({ error: "Tip scanare necunoscut." }, { status: 400 });
   } catch (err) {
-    if (err instanceof Error && err.message === "SERVER_AI_UNAVAILABLE") {
+    if (err instanceof Error && err.message === "GOOGLE_TOKEN_EXPIRED") {
       return NextResponse.json(
-        { error: "Serviciul de scanare nu este configurat pe server." },
-        { status: 503 }
+        {
+          error: "Sesiunea Google a expirat. Reconectează-te cu Google.",
+          needsAuth: true,
+        },
+        { status: 401 }
       );
     }
 

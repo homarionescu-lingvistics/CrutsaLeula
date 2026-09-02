@@ -1,5 +1,3 @@
-import { GoogleGenerativeAI } from "@google/generative-ai";
-
 const DEFAULT_MODEL = "gemini-3.5-flash";
 
 const PRODUCT_PROMPT =
@@ -39,30 +37,55 @@ export function parseGeminiJson<T>(raw: string): T {
   return JSON.parse(text) as T;
 }
 
-function getGeminiModel(systemInstruction: string) {
-  const apiKey = process.env.GEMINI_API_KEY?.trim();
-  if (!apiKey) {
-    throw new Error("SERVER_AI_UNAVAILABLE");
+async function geminiGenerateWithOAuth(
+  accessToken: string,
+  systemInstruction: string,
+  imageBase64: string,
+  mimeType: string
+): Promise<string> {
+  const modelName = process.env.GEMINI_MODEL?.trim() || DEFAULT_MODEL;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent`;
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      systemInstruction: { parts: [{ text: systemInstruction }] },
+      contents: [{ parts: [{ inlineData: { mimeType, data: imageBase64 } }] }],
+    }),
+  });
+
+  if (!response.ok) {
+    if (response.status === 401 || response.status === 403) {
+      throw new Error("GOOGLE_TOKEN_EXPIRED");
+    }
+    const detail = await response.text();
+    throw new Error(`Gemini API error (${response.status}): ${detail.slice(0, 200)}`);
   }
 
-  const modelName = process.env.GEMINI_MODEL?.trim() || DEFAULT_MODEL;
-  const genAI = new GoogleGenerativeAI(apiKey);
-  return genAI.getGenerativeModel({ model: modelName, systemInstruction });
+  const payload = (await response.json()) as {
+    candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+  };
+
+  const text = payload.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? "";
+  if (!text) throw new Error("Gemini nu a returnat un răspuns.");
+  return text;
 }
 
 export async function geminiScanProduct(
   imageBase64: string,
-  mimeType: string
+  mimeType: string,
+  accessToken: string
 ): Promise<ProductScanResult> {
-  const model = getGeminiModel(PRODUCT_PROMPT);
-  const result = await model.generateContent([
-    { inlineData: { data: imageBase64, mimeType } },
-  ]);
+  const raw = await geminiGenerateWithOAuth(accessToken, PRODUCT_PROMPT, imageBase64, mimeType);
   const parsed = parseGeminiJson<{
     brand?: string;
     pret?: number | string | null;
     este_romanesc?: boolean;
-  }>(result.response.text());
+  }>(raw);
 
   const brand = String(parsed.brand ?? "").trim().replace(/^["']|["']$/g, "");
   if (!brand) throw new Error("Nu am identificat un brand.");
@@ -85,17 +108,15 @@ export async function geminiScanProduct(
 
 export async function geminiScanReceipt(
   imageBase64: string,
-  mimeType: string
+  mimeType: string,
+  accessToken: string
 ): Promise<ReceiptScanResult> {
-  const model = getGeminiModel(RECEIPT_PROMPT);
-  const result = await model.generateContent([
-    { inlineData: { data: imageBase64, mimeType } },
-  ]);
+  const raw = await geminiGenerateWithOAuth(accessToken, RECEIPT_PROMPT, imageBase64, mimeType);
   const parsed = parseGeminiJson<{
     magazin?: string;
     total?: number | string;
     produse?: Array<{ nume?: string; pret?: number | string }>;
-  }>(result.response.text());
+  }>(raw);
 
   const magazin = String(parsed.magazin ?? "Chioșc").trim();
   const total =
