@@ -1,11 +1,16 @@
 import Link from "next/link";
+import dynamic from "next/dynamic";
 import { getActiveListings } from "@/lib/listings/queries";
 import { getSessionUser } from "@/lib/auth/session";
 import { FeedList } from "@/components/feed/feed-list";
 import { CreateListingForm } from "@/components/piata/create-listing-form";
-import { BrandSearchPanel } from "@/components/piata/brand-search-panel";
 import { Button } from "@/components/ui/button";
 import { Section } from "@/components/ui/section";
+
+const BrandSearchPanel = dynamic(
+  () => import("@/components/piata/brand-search-panel").then((m) => m.BrandSearchPanel),
+  { ssr: false }
+);
 
 export default async function PiataPage() {
   const [listings, user] = await Promise.all([

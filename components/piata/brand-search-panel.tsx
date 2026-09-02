@@ -3,11 +3,6 @@
 import { useCallback, useState } from "react";
 import type { BrandRomanitate } from "@/lib/supabase/types";
 import { applyKioskReceiptBonus } from "@/lib/piata/receipt-actions";
-import {
-  buildKioskReceiptText,
-  geminiIdentifyProductBrand,
-  geminiParseReceipt,
-} from "@/lib/piata/gemini-client";
 import { ProductScoreCard } from "@/components/piata/ProductScoreCard";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -16,6 +11,119 @@ type Props = {
   initialResults?: BrandRomanitate[];
   alternatives?: Record<string, BrandRomanitate | null>;
 };
+
+type LanguageModelSession = {
+  prompt: (input: string | unknown[]) => Promise<string>;
+  destroy?: () => void;
+};
+
+type LanguageModelCtor = {
+  availability: () => Promise<string>;
+  create: (options?: { systemPrompt?: string }) => Promise<LanguageModelSession>;
+};
+
+function buildKioskReceiptText(magazin: string, total: number): string {
+  const today = new Date().toLocaleDateString("ro-RO");
+  return `Magazin: ${magazin}\nArticol 1\nData: ${today}\nSuma Totală: ${total.toFixed(2)}`;
+}
+
+async function fileToBase64(file: File): Promise<{ imageBase64: string; mimeType: string }> {
+  const imageBase64 = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = reader.result as string;
+      resolve(dataUrl.split(",")[1] ?? "");
+    };
+    reader.onerror = () => reject(new Error("Nu am putut citi imaginea."));
+    reader.readAsDataURL(file);
+  });
+  return { imageBase64, mimeType: file.type || "image/jpeg" };
+}
+
+function getBrowserLanguageModel(): LanguageModelCtor | null {
+  if (typeof window === "undefined") return null;
+  return (window as Window & { LanguageModel?: LanguageModelCtor }).LanguageModel ?? null;
+}
+
+async function tryBrowserProductScan(file: File): Promise<string | null> {
+  const LM = getBrowserLanguageModel();
+  if (!LM) return null;
+
+  try {
+    const availability = await LM.availability();
+    if (availability === "unavailable") return null;
+
+    const session = await LM.create({
+      systemPrompt:
+        "Identifică brandul principal din imagine. Întoarce DOAR numele curat (ex: Elmas, Milka). Fără alt text.",
+    });
+
+    const promptInput = [
+      {
+        role: "user",
+        content: [
+          { type: "text", value: "Ce brand este pe această etichetă sau ambalaj?" },
+          { type: "image", value: file },
+        ],
+      },
+    ];
+
+    const result = await session.prompt(promptInput).catch(() =>
+      session.prompt("Identifică brandul principal din poză. Răspunde doar cu numele brandului.")
+    );
+
+    session.destroy?.();
+    const brand = result.trim().replace(/^["']|["']$/g, "");
+    return brand.length >= 2 ? brand : null;
+  } catch {
+    return null;
+  }
+}
+
+async function tryBrowserReceiptScan(file: File): Promise<{ magazin: string; total: number } | null> {
+  const LM = getBrowserLanguageModel();
+  if (!LM) return null;
+
+  try {
+    const availability = await LM.availability();
+    if (availability === "unavailable") return null;
+
+    const session = await LM.create({
+      systemPrompt:
+        "Extrage din bon fiscal românesc magazinul și suma totală. Răspunde STRICT JSON: {\"magazin\":\"Nume\",\"total\":12.34}",
+    });
+
+    const promptInput = [
+      {
+        role: "user",
+        content: [
+          { type: "text", value: "Extrage magazinul și totalul din acest bon." },
+          { type: "image", value: file },
+        ],
+      },
+    ];
+
+    const result = await session.prompt(promptInput).catch(() =>
+      session.prompt("Extrage magazinul și totalul din bon. Format JSON strict.")
+    );
+
+    session.destroy?.();
+    const cleaned = result.replace(/```json/gi, "").replace(/```/g, "").trim();
+    const parsed = JSON.parse(cleaned.replace(/'/g, '"')) as {
+      magazin?: string;
+      total?: number | string;
+    };
+    const magazin = String(parsed.magazin ?? "Chioșc").trim();
+    const total =
+      typeof parsed.total === "number"
+        ? parsed.total
+        : Number(String(parsed.total ?? "").replace(",", "."));
+    if (!Number.isFinite(total) || total <= 0) return null;
+    return { magazin, total };
+  } catch {
+    return null;
+  }
+}
 
 export function BrandSearchPanel({ initialResults = [], alternatives = {} }: Props) {
   const [query, setQuery] = useState("");
@@ -27,27 +135,37 @@ export function BrandSearchPanel({ initialResults = [], alternatives = {} }: Pro
   const [receiptTotal, setReceiptTotal] = useState("");
   const [receiptText, setReceiptText] = useState("");
   const [bonusMsg, setBonusMsg] = useState<string | null>(null);
-  const [geminiError, setGeminiError] = useState<string | null>(null);
+  const [scanError, setScanError] = useState<string | null>(null);
 
-  const search = useCallback(async (q: string) => {
-    const trimmed = q.trim();
-    if (trimmed.length < 2) {
-      setResults([]);
-      return;
-    }
-    setLoading(true);
-    try {
-      const res = await fetch(`/api/piata/brand-search?q=${encodeURIComponent(trimmed)}`);
-      const data = (await res.json()) as {
-        results: BrandRomanitate[];
-        alternatives: Record<string, BrandRomanitate | null>;
-      };
+  const applySearchPayload = useCallback(
+    (data: { results?: BrandRomanitate[]; alternatives?: Record<string, BrandRomanitate | null> }) => {
       setResults(data.results ?? []);
       setAltMap(data.alternatives ?? {});
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+    },
+    []
+  );
+
+  const search = useCallback(
+    async (q: string) => {
+      const trimmed = q.trim();
+      if (trimmed.length < 2) {
+        setResults([]);
+        return;
+      }
+      setLoading(true);
+      try {
+        const res = await fetch(`/api/piata/brand-search?q=${encodeURIComponent(trimmed)}`);
+        const data = (await res.json()) as {
+          results: BrandRomanitate[];
+          alternatives: Record<string, BrandRomanitate | null>;
+        };
+        applySearchPayload(data);
+      } finally {
+        setLoading(false);
+      }
+    },
+    [applySearchPayload]
+  );
 
   async function handleReceiptBonus(text = receiptText) {
     setBonusMsg(null);
@@ -59,14 +177,45 @@ export function BrandSearchPanel({ initialResults = [], alternatives = {} }: Pro
     const file = event.target.files?.[0];
     event.target.value = "";
     if (!file) return;
-    setGeminiError(null);
+    setScanError(null);
     setOcrLoading(true);
     try {
-      const brand = await geminiIdentifyProductBrand(file);
+      const browserBrand = await tryBrowserProductScan(file);
+      const { imageBase64, mimeType } = await fileToBase64(file);
+
+      const res = await fetch("/api/piata/brand-search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          scan: "product",
+          query: browserBrand ?? undefined,
+          imageBase64: browserBrand ? undefined : imageBase64,
+          mimeType,
+        }),
+      });
+
+      const data = (await res.json()) as {
+        brand?: string;
+        results?: BrandRomanitate[];
+        alternatives?: Record<string, BrandRomanitate | null>;
+        error?: string;
+        needsClientAi?: boolean;
+      };
+
+      if (!res.ok) {
+        if (data.needsClientAi) {
+          throw new Error(
+            "AI-ul din browser nu e disponibil. Folosește Chrome pe Android cu Gemini activat, sau caută manual."
+          );
+        }
+        throw new Error(data.error ?? "Scanarea produsului a eșuat.");
+      }
+
+      const brand = data.brand ?? browserBrand ?? "";
       setQuery(brand);
-      await search(brand);
+      applySearchPayload(data);
     } catch (err) {
-      setGeminiError(err instanceof Error ? err.message : "Scanarea produsului a eșuat.");
+      setScanError(err instanceof Error ? err.message : "Scanarea produsului a eșuat.");
     } finally {
       setOcrLoading(false);
     }
@@ -76,17 +225,49 @@ export function BrandSearchPanel({ initialResults = [], alternatives = {} }: Pro
     const file = event.target.files?.[0];
     event.target.value = "";
     if (!file) return;
-    setGeminiError(null);
+    setScanError(null);
     setOcrLoading(true);
     try {
-      const { magazin, total } = await geminiParseReceipt(file);
-      const text = buildKioskReceiptText(magazin, total);
+      const browserReceipt = await tryBrowserReceiptScan(file);
+      let magazin = browserReceipt?.magazin ?? "";
+      let total = browserReceipt?.total ?? 0;
+      let text = browserReceipt ? buildKioskReceiptText(magazin, total) : "";
+
+      if (!browserReceipt) {
+        const { imageBase64, mimeType } = await fileToBase64(file);
+        const res = await fetch("/api/piata/brand-search", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ scan: "receipt", imageBase64, mimeType }),
+        });
+        const data = (await res.json()) as {
+          magazin?: string;
+          total?: number;
+          receiptText?: string;
+          error?: string;
+          needsClientAi?: boolean;
+        };
+
+        if (!res.ok) {
+          if (data.needsClientAi) {
+            throw new Error(
+              "AI-ul din browser nu e disponibil. Folosește Chrome pe Android cu Gemini activat, sau completează manual."
+            );
+          }
+          throw new Error(data.error ?? "Scanarea bonului a eșuat.");
+        }
+
+        magazin = data.magazin ?? "";
+        total = data.total ?? 0;
+        text = data.receiptText ?? buildKioskReceiptText(magazin, total);
+      }
+
       setReceiptMagazin(magazin);
       setReceiptTotal(String(total));
       setReceiptText(text);
       await handleReceiptBonus(text);
     } catch (err) {
-      setGeminiError(err instanceof Error ? err.message : "Scanarea bonului a eșuat.");
+      setScanError(err instanceof Error ? err.message : "Scanarea bonului a eșuat.");
     } finally {
       setOcrLoading(false);
     }
@@ -120,10 +301,10 @@ export function BrandSearchPanel({ initialResults = [], alternatives = {} }: Pro
         />
         {loading || ocrLoading ? (
           <p className="text-sm text-zinc-500">
-            {ocrLoading ? "Gemini analizează poza…" : "Se caută…"}
+            {ocrLoading ? "Se analizează poza…" : "Se caută…"}
           </p>
         ) : null}
-        {geminiError ? <p className="text-sm text-red-600">{geminiError}</p> : null}
+        {scanError ? <p className="text-sm text-red-600">{scanError}</p> : null}
       </div>
 
       {results.length > 0 ? (
