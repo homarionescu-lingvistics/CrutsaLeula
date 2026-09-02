@@ -11,8 +11,11 @@ from pathlib import Path
 from typing import Any
 
 import requests
+import urllib3
 from dotenv import load_dotenv
 from supabase import Client, create_client
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 URL_BASE = "https://monitorulpreturilor.info/pmonsvc/Retail/"
 UAT_ID = 179132
@@ -37,7 +40,7 @@ def get_supabase_client() -> Client:
 
 def fetch_json(session: requests.Session, endpoint: str, params: dict[str, Any]) -> Any:
     url = f"{URL_BASE}{endpoint}"
-    response = session.get(url, params=params, timeout=REQUEST_TIMEOUT)
+    response = session.get(url, params=params, timeout=REQUEST_TIMEOUT, verify=False)
     response.raise_for_status()
     return response.json()
 
