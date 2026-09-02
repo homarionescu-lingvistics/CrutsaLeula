@@ -2,6 +2,8 @@
 
 import { useCallback, useState } from "react";
 import type { BrandRomanitate } from "@/lib/supabase/types";
+import { extractSearchTermsFromOcr, runOcrOnImageFile } from "@/lib/produse/ocr-client";
+import { isKioskReceipt } from "@/lib/piata/receipt-ocr";
 import { applyKioskReceiptBonus } from "@/lib/piata/receipt-actions";
 import { ProductScoreCard } from "@/components/piata/ProductScoreCard";
 import { Button } from "@/components/ui/button";
@@ -17,6 +19,7 @@ export function BrandSearchPanel({ initialResults = [], alternatives = {} }: Pro
   const [results, setResults] = useState<BrandRomanitate[]>(initialResults);
   const [altMap, setAltMap] = useState(alternatives);
   const [loading, setLoading] = useState(false);
+  const [ocrLoading, setOcrLoading] = useState(false);
   const [receiptText, setReceiptText] = useState("");
   const [bonusMsg, setBonusMsg] = useState<string | null>(null);
 
@@ -40,10 +43,44 @@ export function BrandSearchPanel({ initialResults = [], alternatives = {} }: Pro
     }
   }, []);
 
-  async function handleReceiptBonus() {
+  async function handleReceiptBonus(text = receiptText) {
     setBonusMsg(null);
-    const result = await applyKioskReceiptBonus(receiptText);
+    const result = await applyKioskReceiptBonus(text);
     setBonusMsg(result.message);
+  }
+
+  async function handleProductCamera(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    setOcrLoading(true);
+    try {
+      const text = await runOcrOnImageFile(file);
+      const terms = extractSearchTermsFromOcr(text);
+      const term = terms[0]?.trim();
+      if (!term) return;
+      setQuery(term);
+      await search(term);
+    } finally {
+      setOcrLoading(false);
+    }
+  }
+
+  async function handleReceiptCamera(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    setOcrLoading(true);
+    try {
+      const text = (await runOcrOnImageFile(file)).trim();
+      if (!text) return;
+      setReceiptText(text);
+      if (isKioskReceipt(text)) {
+        await handleReceiptBonus(text);
+      }
+    } finally {
+      setOcrLoading(false);
+    }
   }
 
   return (
@@ -58,7 +95,23 @@ export function BrandSearchPanel({ initialResults = [], alternatives = {} }: Pro
             void search(e.target.value);
           }}
         />
-        {loading ? <p className="text-sm text-zinc-500">Se caută…</p> : null}
+        <label
+          htmlFor="product-camera-input"
+          className="mt-2 flex w-full cursor-pointer items-center justify-center gap-2 rounded-lg bg-zinc-800 p-3 text-center font-bold text-white shadow-sm hover:bg-zinc-700"
+        >
+          📷 FOTO RAFT / PRODUS
+        </label>
+        <input
+          id="product-camera-input"
+          type="file"
+          accept="image/*"
+          capture="environment"
+          className="hidden"
+          onChange={(e) => void handleProductCamera(e)}
+        />
+        {loading || ocrLoading ? (
+          <p className="text-sm text-zinc-500">{ocrLoading ? "Se citește poza…" : "Se caută…"}</p>
+        ) : null}
       </div>
 
       {results.length > 0 ? (
@@ -91,6 +144,20 @@ export function BrandSearchPanel({ initialResults = [], alternatives = {} }: Pro
           placeholder="Articol 1 ... Suma Totală: 25.50 ..."
           value={receiptText}
           onChange={(e) => setReceiptText(e.target.value)}
+        />
+        <label
+          htmlFor="receipt-camera-input"
+          className="mt-2 flex w-full cursor-pointer items-center justify-center gap-2 rounded-xl bg-emerald-600 p-4 text-center font-bold text-white shadow-md hover:bg-emerald-500"
+        >
+          📸 FĂ POZĂ LA BON (DESCHIDE CAMERĂ)
+        </label>
+        <input
+          id="receipt-camera-input"
+          type="file"
+          accept="image/*"
+          capture="environment"
+          className="hidden"
+          onChange={(e) => void handleReceiptCamera(e)}
         />
         <Button type="button" className="w-full" onClick={() => void handleReceiptBonus()}>
           Verifică bon & acordă bonus
