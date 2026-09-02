@@ -1,10 +1,14 @@
 import { NextResponse } from "next/server";
-import { GoogleGenerativeAI } from "@google/generative-ai";
 import { createClient as createSupabaseClient } from "@supabase/supabase-js";
 import {
   getBrandAlternative,
   searchBranduriRomanitate,
 } from "@/lib/piata/branduri-queries";
+import {
+  buildReceiptText,
+  geminiScanProduct,
+  geminiScanReceipt,
+} from "@/lib/piata/gemini-scan";
 import { buildWorthItAlternatives } from "@/lib/produse/trip-worth";
 import type { BrandRomanitate } from "@/lib/supabase/types";
 
@@ -32,16 +36,9 @@ type PostBody = {
   scan?: "product" | "receipt";
   imageBase64?: string;
   mimeType?: string;
-  query?: string;
   lat?: number;
   lng?: number;
 };
-
-const PRODUCT_PROMPT =
-  "Identifică brandul principal din imagine. Întoarce DOAR numele curat (ex: 'Elmas', 'Milka'). Fără alt text.";
-
-const RECEIPT_PROMPT =
-  "Extrage din bon: {'magazin': 'Nume', 'total': valoare_numerică}. Întoarce STRICT acest format JSON.";
 
 function normalizeQuery(raw: string): string {
   return raw.trim().toLowerCase().replace(/\s+/g, " ");
@@ -160,38 +157,6 @@ async function runBrandSearch(q: string, lat?: number, lng?: number) {
   };
 }
 
-function parseGeminiJson<T>(raw: string): T {
-  const cleaned = raw.replace(/```json/gi, "").replace(/```/g, "").trim();
-  const normalized = cleaned.replace(/'/g, '"');
-  return JSON.parse(normalized) as T;
-}
-
-async function geminiFromImage(
-  imageBase64: string,
-  mimeType: string,
-  systemInstruction: string
-): Promise<string> {
-  const apiKey = process.env.GEMINI_API_KEY?.trim();
-  if (!apiKey) {
-    throw new Error("SERVER_AI_UNAVAILABLE");
-  }
-
-  const genAI = new GoogleGenerativeAI(apiKey);
-  const model = genAI.getGenerativeModel({
-    model: "gemini-1.5-flash",
-    systemInstruction,
-  });
-  const result = await model.generateContent([
-    { inlineData: { data: imageBase64, mimeType } },
-  ]);
-  return result.response.text().trim();
-}
-
-function buildReceiptText(magazin: string, total: number): string {
-  const today = new Date().toLocaleDateString("ro-RO");
-  return `Magazin: ${magazin}\nArticol 1\nData: ${today}\nSuma Totală: ${total.toFixed(2)}`;
-}
-
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const q = searchParams.get("q") ?? "";
@@ -215,83 +180,44 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Cerere invalidă." }, { status: 400 });
   }
 
-  const { scan, imageBase64, mimeType = "image/jpeg", query, lat, lng } = body;
+  const { scan, imageBase64, mimeType = "image/jpeg", lat, lng } = body;
+
+  if (!imageBase64) {
+    return NextResponse.json({ error: "Lipsește imaginea." }, { status: 400 });
+  }
 
   try {
     if (scan === "product") {
-      let brand = query?.trim() ?? "";
-
-      if (!brand && imageBase64) {
-        try {
-          brand = (await geminiFromImage(imageBase64, mimeType, PRODUCT_PROMPT)).replace(
-            /^["']|["']$/g,
-            ""
-          );
-        } catch (err) {
-          if (err instanceof Error && err.message === "SERVER_AI_UNAVAILABLE") {
-            return NextResponse.json(
-              {
-                error:
-                  "Folosește Chrome cu AI activ pe telefon. Serverul nu are cheie Gemini configurată.",
-                needsClientAi: true,
-              },
-              { status: 503 }
-            );
-          }
-          throw err;
-        }
-      }
-
-      if (!brand) {
-        return NextResponse.json({ error: "Nu am identificat un brand." }, { status: 422 });
-      }
-
-      const searchPayload = await runBrandSearch(brand, lat, lng);
-      return NextResponse.json({ brand, ...searchPayload });
+      const productScan = await geminiScanProduct(imageBase64, mimeType);
+      const searchPayload = await runBrandSearch(productScan.brand, lat, lng);
+      return NextResponse.json({
+        ...productScan,
+        ...searchPayload,
+      });
     }
 
     if (scan === "receipt") {
-      if (!imageBase64) {
-        return NextResponse.json({ error: "Lipsește imaginea bonului." }, { status: 400 });
-      }
-
-      let raw: string;
-      try {
-        raw = await geminiFromImage(imageBase64, mimeType, RECEIPT_PROMPT);
-      } catch (err) {
-        if (err instanceof Error && err.message === "SERVER_AI_UNAVAILABLE") {
-          return NextResponse.json(
-            {
-              error:
-                "Folosește Chrome cu AI activ pe telefon. Serverul nu are cheie Gemini configurată.",
-              needsClientAi: true,
-            },
-            { status: 503 }
-          );
-        }
-        throw err;
-      }
-
-      const parsed = parseGeminiJson<{ magazin?: string; total?: number | string }>(raw);
-      const magazin = String(parsed.magazin ?? "Chioșc").trim();
-      const total =
-        typeof parsed.total === "number"
-          ? parsed.total
-          : Number(String(parsed.total ?? "").replace(",", "."));
-
-      if (!Number.isFinite(total) || total <= 0) {
-        return NextResponse.json({ error: "Nu am extras suma totală din bon." }, { status: 422 });
-      }
-
+      const receiptScan = await geminiScanReceipt(imageBase64, mimeType);
       return NextResponse.json({
-        magazin,
-        total,
-        receiptText: buildReceiptText(magazin, total),
+        ...receiptScan,
+        receiptText: buildReceiptText(
+          receiptScan.magazin,
+          receiptScan.total,
+          receiptScan.produse
+        ),
       });
     }
 
     return NextResponse.json({ error: "Tip scanare necunoscut." }, { status: 400 });
-  } catch {
-    return NextResponse.json({ error: "Scanarea a eșuat." }, { status: 500 });
+  } catch (err) {
+    if (err instanceof Error && err.message === "SERVER_AI_UNAVAILABLE") {
+      return NextResponse.json(
+        { error: "Serviciul de scanare nu este configurat pe server." },
+        { status: 503 }
+      );
+    }
+
+    const message = err instanceof Error ? err.message : "Scanarea a eșuat.";
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }

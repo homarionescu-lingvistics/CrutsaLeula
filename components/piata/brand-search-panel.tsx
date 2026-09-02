@@ -3,6 +3,7 @@
 import { useCallback, useState } from "react";
 import type { BrandRomanitate } from "@/lib/supabase/types";
 import { applyKioskReceiptBonus } from "@/lib/piata/receipt-actions";
+import type { ReceiptProduct } from "@/lib/piata/gemini-scan";
 import { ProductScoreCard } from "@/components/piata/ProductScoreCard";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -12,19 +13,40 @@ type Props = {
   alternatives?: Record<string, BrandRomanitate | null>;
 };
 
-type LanguageModelSession = {
-  prompt: (input: string | unknown[]) => Promise<string>;
-  destroy?: () => void;
+type ProductScanPayload = {
+  brand?: string;
+  pret?: number | null;
+  este_romanesc?: boolean;
+  results?: BrandRomanitate[];
+  alternatives?: Record<string, BrandRomanitate | null>;
+  error?: string;
 };
 
-type LanguageModelCtor = {
-  availability: () => Promise<string>;
-  create: (options?: { systemPrompt?: string }) => Promise<LanguageModelSession>;
+type ReceiptScanPayload = {
+  magazin?: string;
+  total?: number;
+  produse?: ReceiptProduct[];
+  receiptText?: string;
+  error?: string;
 };
 
-function buildKioskReceiptText(magazin: string, total: number): string {
+function buildKioskReceiptText(
+  magazin: string,
+  total: number,
+  produse: ReceiptProduct[] = []
+): string {
   const today = new Date().toLocaleDateString("ro-RO");
-  return `Magazin: ${magazin}\nArticol 1\nData: ${today}\nSuma Totală: ${total.toFixed(2)}`;
+  const productLines =
+    produse.length > 0
+      ? produse.map((p, index) => {
+          const price = p.pret != null ? ` - ${p.pret.toFixed(2)} Lei` : "";
+          return `Articol ${index + 1}: ${p.nume}${price}`;
+        })
+      : ["Articol 1"];
+
+  return [`Magazin: ${magazin}`, ...productLines, `Data: ${today}`, `Suma Totală: ${total.toFixed(2)}`].join(
+    "\n"
+  );
 }
 
 async function fileToBase64(file: File): Promise<{ imageBase64: string; mimeType: string }> {
@@ -40,89 +62,26 @@ async function fileToBase64(file: File): Promise<{ imageBase64: string; mimeType
   return { imageBase64, mimeType: file.type || "image/jpeg" };
 }
 
-function getBrowserLanguageModel(): LanguageModelCtor | null {
-  if (typeof window === "undefined") return null;
-  return (window as Window & { LanguageModel?: LanguageModelCtor }).LanguageModel ?? null;
-}
+async function postScan<T>(body: Record<string, unknown>): Promise<T> {
+  const res = await fetch("/api/piata/brand-search", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
 
-async function tryBrowserProductScan(file: File): Promise<string | null> {
-  const LM = getBrowserLanguageModel();
-  if (!LM) return null;
-
+  const raw = await res.text();
+  let data: T & { error?: string };
   try {
-    const availability = await LM.availability();
-    if (availability === "unavailable") return null;
-
-    const session = await LM.create({
-      systemPrompt:
-        "Identifică brandul principal din imagine. Întoarce DOAR numele curat (ex: Elmas, Milka). Fără alt text.",
-    });
-
-    const promptInput = [
-      {
-        role: "user",
-        content: [
-          { type: "text", value: "Ce brand este pe această etichetă sau ambalaj?" },
-          { type: "image", value: file },
-        ],
-      },
-    ];
-
-    const result = await session.prompt(promptInput).catch(() =>
-      session.prompt("Identifică brandul principal din poză. Răspunde doar cu numele brandului.")
-    );
-
-    session.destroy?.();
-    const brand = result.trim().replace(/^["']|["']$/g, "");
-    return brand.length >= 2 ? brand : null;
+    data = JSON.parse(raw) as T & { error?: string };
   } catch {
-    return null;
+    throw new Error("Răspuns invalid de la server.");
   }
-}
 
-async function tryBrowserReceiptScan(file: File): Promise<{ magazin: string; total: number } | null> {
-  const LM = getBrowserLanguageModel();
-  if (!LM) return null;
-
-  try {
-    const availability = await LM.availability();
-    if (availability === "unavailable") return null;
-
-    const session = await LM.create({
-      systemPrompt:
-        "Extrage din bon fiscal românesc magazinul și suma totală. Răspunde STRICT JSON: {\"magazin\":\"Nume\",\"total\":12.34}",
-    });
-
-    const promptInput = [
-      {
-        role: "user",
-        content: [
-          { type: "text", value: "Extrage magazinul și totalul din acest bon." },
-          { type: "image", value: file },
-        ],
-      },
-    ];
-
-    const result = await session.prompt(promptInput).catch(() =>
-      session.prompt("Extrage magazinul și totalul din bon. Format JSON strict.")
-    );
-
-    session.destroy?.();
-    const cleaned = result.replace(/```json/gi, "").replace(/```/g, "").trim();
-    const parsed = JSON.parse(cleaned.replace(/'/g, '"')) as {
-      magazin?: string;
-      total?: number | string;
-    };
-    const magazin = String(parsed.magazin ?? "Chioșc").trim();
-    const total =
-      typeof parsed.total === "number"
-        ? parsed.total
-        : Number(String(parsed.total ?? "").replace(",", "."));
-    if (!Number.isFinite(total) || total <= 0) return null;
-    return { magazin, total };
-  } catch {
-    return null;
+  if (!res.ok) {
+    throw new Error(data.error ?? "Scanarea a eșuat.");
   }
+
+  return data;
 }
 
 export function BrandSearchPanel({ initialResults = [], alternatives = {} }: Props) {
@@ -133,9 +92,15 @@ export function BrandSearchPanel({ initialResults = [], alternatives = {} }: Pro
   const [ocrLoading, setOcrLoading] = useState(false);
   const [receiptMagazin, setReceiptMagazin] = useState("");
   const [receiptTotal, setReceiptTotal] = useState("");
+  const [receiptProducts, setReceiptProducts] = useState<ReceiptProduct[]>([]);
   const [receiptText, setReceiptText] = useState("");
   const [bonusMsg, setBonusMsg] = useState<string | null>(null);
   const [scanError, setScanError] = useState<string | null>(null);
+  const [productScanInfo, setProductScanInfo] = useState<{
+    brand: string;
+    pret: number | null;
+    este_romanesc: boolean;
+  } | null>(null);
 
   const applySearchPayload = useCallback(
     (data: { results?: BrandRomanitate[]; alternatives?: Record<string, BrandRomanitate | null> }) => {
@@ -180,39 +145,20 @@ export function BrandSearchPanel({ initialResults = [], alternatives = {} }: Pro
     setScanError(null);
     setOcrLoading(true);
     try {
-      const browserBrand = await tryBrowserProductScan(file);
       const { imageBase64, mimeType } = await fileToBase64(file);
-
-      const res = await fetch("/api/piata/brand-search", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          scan: "product",
-          query: browserBrand ?? undefined,
-          imageBase64: browserBrand ? undefined : imageBase64,
-          mimeType,
-        }),
+      const data = await postScan<ProductScanPayload>({
+        scan: "product",
+        imageBase64,
+        mimeType,
       });
 
-      const data = (await res.json()) as {
-        brand?: string;
-        results?: BrandRomanitate[];
-        alternatives?: Record<string, BrandRomanitate | null>;
-        error?: string;
-        needsClientAi?: boolean;
-      };
-
-      if (!res.ok) {
-        if (data.needsClientAi) {
-          throw new Error(
-            "AI-ul din browser nu e disponibil. Folosește Chrome pe Android cu Gemini activat, sau caută manual."
-          );
-        }
-        throw new Error(data.error ?? "Scanarea produsului a eșuat.");
-      }
-
-      const brand = data.brand ?? browserBrand ?? "";
+      const brand = data.brand ?? "";
       setQuery(brand);
+      setProductScanInfo({
+        brand,
+        pret: data.pret ?? null,
+        este_romanesc: Boolean(data.este_romanesc),
+      });
       applySearchPayload(data);
     } catch (err) {
       setScanError(err instanceof Error ? err.message : "Scanarea produsului a eșuat.");
@@ -228,42 +174,21 @@ export function BrandSearchPanel({ initialResults = [], alternatives = {} }: Pro
     setScanError(null);
     setOcrLoading(true);
     try {
-      const browserReceipt = await tryBrowserReceiptScan(file);
-      let magazin = browserReceipt?.magazin ?? "";
-      let total = browserReceipt?.total ?? 0;
-      let text = browserReceipt ? buildKioskReceiptText(magazin, total) : "";
+      const { imageBase64, mimeType } = await fileToBase64(file);
+      const data = await postScan<ReceiptScanPayload>({
+        scan: "receipt",
+        imageBase64,
+        mimeType,
+      });
 
-      if (!browserReceipt) {
-        const { imageBase64, mimeType } = await fileToBase64(file);
-        const res = await fetch("/api/piata/brand-search", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ scan: "receipt", imageBase64, mimeType }),
-        });
-        const data = (await res.json()) as {
-          magazin?: string;
-          total?: number;
-          receiptText?: string;
-          error?: string;
-          needsClientAi?: boolean;
-        };
-
-        if (!res.ok) {
-          if (data.needsClientAi) {
-            throw new Error(
-              "AI-ul din browser nu e disponibil. Folosește Chrome pe Android cu Gemini activat, sau completează manual."
-            );
-          }
-          throw new Error(data.error ?? "Scanarea bonului a eșuat.");
-        }
-
-        magazin = data.magazin ?? "";
-        total = data.total ?? 0;
-        text = data.receiptText ?? buildKioskReceiptText(magazin, total);
-      }
+      const magazin = data.magazin ?? "";
+      const total = data.total ?? 0;
+      const produse = data.produse ?? [];
+      const text = data.receiptText ?? buildKioskReceiptText(magazin, total, produse);
 
       setReceiptMagazin(magazin);
       setReceiptTotal(String(total));
+      setReceiptProducts(produse);
       setReceiptText(text);
       await handleReceiptBonus(text);
     } catch (err) {
@@ -305,6 +230,21 @@ export function BrandSearchPanel({ initialResults = [], alternatives = {} }: Pro
           </p>
         ) : null}
         {scanError ? <p className="text-sm text-red-600">{scanError}</p> : null}
+        {productScanInfo ? (
+          <div className="rounded-xl border border-zinc-200 bg-white p-3 text-sm text-zinc-800">
+            <p>
+              <span className="font-semibold">Brand detectat:</span> {productScanInfo.brand}
+            </p>
+            <p>
+              <span className="font-semibold">Românesc:</span>{" "}
+              {productScanInfo.este_romanesc ? "Da 🇷🇴" : "Nu"}
+            </p>
+            <p>
+              <span className="font-semibold">Preț pe etichetă:</span>{" "}
+              {productScanInfo.pret != null ? `${productScanInfo.pret.toFixed(2)} Lei` : "—"}
+            </p>
+          </div>
+        ) : null}
       </div>
 
       {results.length > 0 ? (
@@ -340,7 +280,7 @@ export function BrandSearchPanel({ initialResults = [], alternatives = {} }: Pro
             setReceiptMagazin(magazin);
             const total = Number(receiptTotal.replace(",", "."));
             if (magazin && Number.isFinite(total) && total > 0) {
-              setReceiptText(buildKioskReceiptText(magazin, total));
+              setReceiptText(buildKioskReceiptText(magazin, total, receiptProducts));
             }
           }}
         />
@@ -353,13 +293,26 @@ export function BrandSearchPanel({ initialResults = [], alternatives = {} }: Pro
             setReceiptTotal(totalStr);
             const total = Number(totalStr.replace(",", "."));
             if (receiptMagazin && Number.isFinite(total) && total > 0) {
-              setReceiptText(buildKioskReceiptText(receiptMagazin, total));
+              setReceiptText(buildKioskReceiptText(receiptMagazin, total, receiptProducts));
             }
           }}
         />
+        {receiptProducts.length > 0 ? (
+          <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-zinc-800">
+            <p className="font-semibold text-emerald-900">Produse detectate pe bon</p>
+            <ul className="mt-2 space-y-1">
+              {receiptProducts.map((product, index) => (
+                <li key={`${product.nume}-${index}`}>
+                  {product.nume}
+                  {product.pret != null ? ` — ${product.pret.toFixed(2)} Lei` : ""}
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
         <textarea
           className="w-full rounded-xl border border-zinc-300 bg-zinc-50 px-3 py-2.5 text-sm text-zinc-900 outline-none ring-emerald-500/40 placeholder:text-zinc-400 focus:ring-2"
-          rows={3}
+          rows={4}
           placeholder="Text bon generat automat din poză…"
           value={receiptText}
           onChange={(e) => setReceiptText(e.target.value)}
