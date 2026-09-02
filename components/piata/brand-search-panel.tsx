@@ -1,10 +1,15 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { BrandRomanitate } from "@/lib/supabase/types";
-import { extractSearchTermsFromOcr, runOcrOnImageFile } from "@/lib/produse/ocr-client";
-import { isKioskReceipt } from "@/lib/piata/receipt-ocr";
 import { applyKioskReceiptBonus } from "@/lib/piata/receipt-actions";
+import {
+  buildKioskReceiptText,
+  geminiIdentifyProductBrand,
+  geminiParseReceipt,
+  getStoredGeminiKey,
+  setStoredGeminiKey,
+} from "@/lib/piata/gemini-client";
 import { ProductScoreCard } from "@/components/piata/ProductScoreCard";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -20,8 +25,16 @@ export function BrandSearchPanel({ initialResults = [], alternatives = {} }: Pro
   const [altMap, setAltMap] = useState(alternatives);
   const [loading, setLoading] = useState(false);
   const [ocrLoading, setOcrLoading] = useState(false);
+  const [receiptMagazin, setReceiptMagazin] = useState("");
+  const [receiptTotal, setReceiptTotal] = useState("");
   const [receiptText, setReceiptText] = useState("");
   const [bonusMsg, setBonusMsg] = useState<string | null>(null);
+  const [geminiKey, setGeminiKey] = useState("");
+  const [geminiError, setGeminiError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setGeminiKey(getStoredGeminiKey());
+  }, []);
 
   const search = useCallback(async (q: string) => {
     const trimmed = q.trim();
@@ -43,6 +56,11 @@ export function BrandSearchPanel({ initialResults = [], alternatives = {} }: Pro
     }
   }, []);
 
+  function saveGeminiKey(value: string) {
+    setGeminiKey(value);
+    setStoredGeminiKey(value);
+  }
+
   async function handleReceiptBonus(text = receiptText) {
     setBonusMsg(null);
     const result = await applyKioskReceiptBonus(text);
@@ -53,14 +71,14 @@ export function BrandSearchPanel({ initialResults = [], alternatives = {} }: Pro
     const file = event.target.files?.[0];
     event.target.value = "";
     if (!file) return;
+    setGeminiError(null);
     setOcrLoading(true);
     try {
-      const text = await runOcrOnImageFile(file);
-      const terms = extractSearchTermsFromOcr(text);
-      const term = terms[0]?.trim();
-      if (!term) return;
-      setQuery(term);
-      await search(term);
+      const brand = await geminiIdentifyProductBrand(file, geminiKey);
+      setQuery(brand);
+      await search(brand);
+    } catch (err) {
+      setGeminiError(err instanceof Error ? err.message : "Scanarea produsului a eșuat.");
     } finally {
       setOcrLoading(false);
     }
@@ -70,14 +88,17 @@ export function BrandSearchPanel({ initialResults = [], alternatives = {} }: Pro
     const file = event.target.files?.[0];
     event.target.value = "";
     if (!file) return;
+    setGeminiError(null);
     setOcrLoading(true);
     try {
-      const text = (await runOcrOnImageFile(file)).trim();
-      if (!text) return;
+      const { magazin, total } = await geminiParseReceipt(file, geminiKey);
+      const text = buildKioskReceiptText(magazin, total);
+      setReceiptMagazin(magazin);
+      setReceiptTotal(String(total));
       setReceiptText(text);
-      if (isKioskReceipt(text)) {
-        await handleReceiptBonus(text);
-      }
+      await handleReceiptBonus(text);
+    } catch (err) {
+      setGeminiError(err instanceof Error ? err.message : "Scanarea bonului a eșuat.");
     } finally {
       setOcrLoading(false);
     }
@@ -85,6 +106,22 @@ export function BrandSearchPanel({ initialResults = [], alternatives = {} }: Pro
 
   return (
     <div className="space-y-6">
+      <details className="rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs text-zinc-600">
+        <summary className="cursor-pointer font-medium text-zinc-700">
+          Cheie API Gemini (stocată local pe telefon)
+        </summary>
+        <div className="mt-2 space-y-1">
+          <input
+            type="password"
+            className="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900"
+            placeholder="AIza..."
+            value={geminiKey}
+            onChange={(e) => saveGeminiKey(e.target.value)}
+          />
+          <p>Cheia rămâne în browser (`localStorage`). Apelurile Gemini se fac direct de pe dispozitivul tău.</p>
+        </div>
+      </details>
+
       <div className="space-y-3">
         <Input
           label="Caută produs (nume sau cod de bare)"
@@ -110,8 +147,11 @@ export function BrandSearchPanel({ initialResults = [], alternatives = {} }: Pro
           onChange={(e) => void handleProductCamera(e)}
         />
         {loading || ocrLoading ? (
-          <p className="text-sm text-zinc-500">{ocrLoading ? "Se citește poza…" : "Se caută…"}</p>
+          <p className="text-sm text-zinc-500">
+            {ocrLoading ? "Gemini analizează poza…" : "Se caută…"}
+          </p>
         ) : null}
+        {geminiError ? <p className="text-sm text-red-600">{geminiError}</p> : null}
       </div>
 
       {results.length > 0 ? (
@@ -136,12 +176,38 @@ export function BrandSearchPanel({ initialResults = [], alternatives = {} }: Pro
       <section className="space-y-3 rounded-2xl border border-zinc-200 bg-white p-4">
         <h2 className="text-sm font-semibold text-zinc-800">Bon chioșc mic (OCR)</h2>
         <p className="text-xs text-zinc-500">
-          Lipește textul scanat de pe bon (Articol 1, dată, sumă totală). Bonus +20 puncte Koson.
+          Fă poză la bon sau completează manual. Bonus +20 puncte Koson.
         </p>
+        <Input
+          label="Magazin"
+          placeholder="ex: Chioșc Rahova"
+          value={receiptMagazin}
+          onChange={(e) => {
+            const magazin = e.target.value;
+            setReceiptMagazin(magazin);
+            const total = Number(receiptTotal.replace(",", "."));
+            if (magazin && Number.isFinite(total) && total > 0) {
+              setReceiptText(buildKioskReceiptText(magazin, total));
+            }
+          }}
+        />
+        <Input
+          label="Sumă totală (Lei)"
+          placeholder="ex: 25.50"
+          value={receiptTotal}
+          onChange={(e) => {
+            const totalStr = e.target.value;
+            setReceiptTotal(totalStr);
+            const total = Number(totalStr.replace(",", "."));
+            if (receiptMagazin && Number.isFinite(total) && total > 0) {
+              setReceiptText(buildKioskReceiptText(receiptMagazin, total));
+            }
+          }}
+        />
         <textarea
           className="w-full rounded-xl border border-zinc-300 bg-zinc-50 px-3 py-2.5 text-sm text-zinc-900 outline-none ring-emerald-500/40 placeholder:text-zinc-400 focus:ring-2"
-          rows={4}
-          placeholder="Articol 1 ... Suma Totală: 25.50 ..."
+          rows={3}
+          placeholder="Text bon generat automat din poză…"
           value={receiptText}
           onChange={(e) => setReceiptText(e.target.value)}
         />
