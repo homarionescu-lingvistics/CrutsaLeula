@@ -122,7 +122,7 @@ export async function updateProfile(formData: FormData) {
 // ==========================================
 // FIX PENTRU PROCESUL INTERRUPTED DIN CURSOR
 // ==========================================
-export async function resendVerificationEmail(email: string) {
+export async function resendVerificationEmail(email?: string) {
   console.log("Cerere primit pentru retrimitere email către:", email);
   
   // Aici poți implementa ulterior logica nativă Supabase dacă dorești:
