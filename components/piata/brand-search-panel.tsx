@@ -2,7 +2,7 @@
 
 import { useCallback, useState } from "react";
 import type { BrandRomanitate } from "@/lib/supabase/types";
-import { applyKioskReceiptBonus } from "@/lib/piata/receipt-actions";
+import { applyReceiptScanBonus } from "@/lib/piata/receipt-actions";
 import type { ReceiptProduct } from "@/lib/piata/gemini-scan";
 import { ProductScoreCard } from "@/components/piata/ProductScoreCard";
 import { Button } from "@/components/ui/button";
@@ -16,26 +16,36 @@ type Props = {
 type ProductScanPayload = {
   brand?: string;
   pret?: number | null;
+  categorie_tip?: 1 | 2 | 3 | 4 | 5;
+  procent_retentie_ron?: number | null;
   este_romanesc?: boolean;
+  motiv?: string | null;
   results?: BrandRomanitate[];
   alternatives?: Record<string, BrandRomanitate | null>;
   error?: string;
+  code?: string;
 };
 
 type ReceiptScanPayload = {
   magazin?: string;
+  adresa?: string | null;
+  data_bon?: string | null;
   total?: number;
   produse?: ReceiptProduct[];
+  este_chioc_local?: boolean;
   receiptText?: string;
   error?: string;
+  code?: string;
 };
 
 function buildKioskReceiptText(
   magazin: string,
   total: number,
-  produse: ReceiptProduct[] = []
+  produse: ReceiptProduct[] = [],
+  dataBon?: string | null,
+  adresa?: string | null
 ): string {
-  const today = new Date().toLocaleDateString("ro-RO");
+  const dateLabel = dataBon?.trim() || new Date().toLocaleDateString("ro-RO");
   const productLines =
     produse.length > 0
       ? produse.map((p, index) => {
@@ -44,22 +54,67 @@ function buildKioskReceiptText(
         })
       : ["Articol 1"];
 
-  return [`Magazin: ${magazin}`, ...productLines, `Data: ${today}`, `Suma Totală: ${total.toFixed(2)}`].join(
-    "\n"
-  );
+  const lines = [`Magazin: ${magazin}`];
+  if (adresa) lines.push(`Adresa: ${adresa}`);
+  lines.push(...productLines, `Data: ${dateLabel}`, `Suma Totală: ${total.toFixed(2)}`);
+  return lines.join("\n");
 }
 
-async function fileToBase64(file: File): Promise<{ imageBase64: string; mimeType: string }> {
+/** Comprimă poza (telefon) → JPEG mai mic, ca să treacă upload-ul. */
+async function compressImageFile(
+  file: File,
+  maxDim = 1600,
+  quality = 0.72
+): Promise<{ imageBase64: string; mimeType: string }> {
+  const bitmap = await createImageBitmap(file).catch(async () => {
+    const url = URL.createObjectURL(file);
+    try {
+      const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+        const el = new Image();
+        el.onload = () => resolve(el);
+        el.onerror = () => reject(new Error("Nu am putut citi imaginea."));
+        el.src = url;
+      });
+      return await createImageBitmap(img);
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  });
+
+  const scale = Math.min(1, maxDim / Math.max(bitmap.width, bitmap.height));
+  const width = Math.max(1, Math.round(bitmap.width * scale));
+  const height = Math.max(1, Math.round(bitmap.height * scale));
+
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) {
+    bitmap.close();
+    throw new Error("Canvas indisponibil pe acest dispozitiv.");
+  }
+  ctx.drawImage(bitmap, 0, 0, width, height);
+  bitmap.close();
+
+  const blob = await new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob(
+      (b) => (b ? resolve(b) : reject(new Error("Compresia imaginii a eșuat."))),
+      "image/jpeg",
+      quality
+    );
+  });
+
   const imageBase64 = await new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => {
       const dataUrl = reader.result as string;
       resolve(dataUrl.split(",")[1] ?? "");
     };
-    reader.onerror = () => reject(new Error("Nu am putut citi imaginea."));
-    reader.readAsDataURL(file);
+    reader.onerror = () => reject(new Error("Nu am putut citi imaginea comprimată."));
+    reader.readAsDataURL(blob);
   });
-  return { imageBase64, mimeType: file.type || "image/jpeg" };
+
+  return { imageBase64, mimeType: "image/jpeg" };
 }
 
 async function postScan<T>(body: Record<string, unknown>): Promise<T> {
@@ -70,18 +125,53 @@ async function postScan<T>(body: Record<string, unknown>): Promise<T> {
   });
 
   const raw = await res.text();
-  let data: T & { error?: string };
+  let data: T & { error?: string; code?: string };
   try {
-    data = JSON.parse(raw) as T & { error?: string };
+    data = JSON.parse(raw) as T & { error?: string; code?: string };
   } catch {
-    throw new Error("Răspuns invalid de la server.");
+    throw new Error("Răspuns invalid de la server. Reîncarcă pagina.");
   }
 
   if (!res.ok) {
-    throw new Error(data.error ?? "Scanarea a eșuat.");
+    const err = new Error(
+      data.error ?? "Scanarea a eșuat. Reîncarcă pagina și încearcă din nou."
+    ) as Error & { code?: string };
+    err.code = data.code;
+    throw err;
   }
 
   return data;
+}
+
+function ScanErrorBanner({
+  message,
+  onDismiss,
+}: {
+  message: string;
+  onDismiss: () => void;
+}) {
+  return (
+    <div className="space-y-2 rounded-xl border border-red-200 bg-red-50 p-3">
+      <p className="text-sm text-red-700">{message}</p>
+      <div className="flex gap-2">
+        <Button
+          type="button"
+          className="flex-1"
+          onClick={() => window.location.reload()}
+        >
+          Reîncarcă pagina
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          className="border border-zinc-200"
+          onClick={onDismiss}
+        >
+          Închide
+        </Button>
+      </div>
+    </div>
+  );
 }
 
 export function BrandSearchPanel({ initialResults = [], alternatives = {} }: Props) {
@@ -91,15 +181,20 @@ export function BrandSearchPanel({ initialResults = [], alternatives = {} }: Pro
   const [loading, setLoading] = useState(false);
   const [ocrLoading, setOcrLoading] = useState(false);
   const [receiptMagazin, setReceiptMagazin] = useState("");
+  const [receiptAdresa, setReceiptAdresa] = useState("");
+  const [receiptDataBon, setReceiptDataBon] = useState("");
   const [receiptTotal, setReceiptTotal] = useState("");
   const [receiptProducts, setReceiptProducts] = useState<ReceiptProduct[]>([]);
+  const [receiptLocal, setReceiptLocal] = useState(false);
   const [receiptText, setReceiptText] = useState("");
   const [bonusMsg, setBonusMsg] = useState<string | null>(null);
   const [scanError, setScanError] = useState<string | null>(null);
   const [productScanInfo, setProductScanInfo] = useState<{
     brand: string;
     pret: number | null;
+    categorie_tip: number;
     este_romanesc: boolean;
+    motiv: string | null;
   } | null>(null);
 
   const applySearchPayload = useCallback(
@@ -132,9 +227,18 @@ export function BrandSearchPanel({ initialResults = [], alternatives = {} }: Pro
     [applySearchPayload]
   );
 
-  async function handleReceiptBonus(text = receiptText) {
+  async function handleReceiptBonus() {
     setBonusMsg(null);
-    const result = await applyKioskReceiptBonus(text);
+    const total = Number(receiptTotal.replace(",", "."));
+    const result = await applyReceiptScanBonus({
+      magazin: receiptMagazin,
+      adresa: receiptAdresa || null,
+      total,
+      dataBon: receiptDataBon || null,
+      produse: receiptProducts,
+      esteChiocLocal: receiptLocal,
+      rawText: receiptText,
+    });
     setBonusMsg(result.message);
   }
 
@@ -145,7 +249,7 @@ export function BrandSearchPanel({ initialResults = [], alternatives = {} }: Pro
     setScanError(null);
     setOcrLoading(true);
     try {
-      const { imageBase64, mimeType } = await fileToBase64(file);
+      const { imageBase64, mimeType } = await compressImageFile(file);
       const data = await postScan<ProductScanPayload>({
         scan: "product",
         imageBase64,
@@ -157,11 +261,17 @@ export function BrandSearchPanel({ initialResults = [], alternatives = {} }: Pro
       setProductScanInfo({
         brand,
         pret: data.pret ?? null,
+        categorie_tip: data.categorie_tip ?? data.results?.[0]?.categorie_tip ?? 2,
         este_romanesc: Boolean(data.este_romanesc),
+        motiv: data.motiv ?? null,
       });
       applySearchPayload(data);
     } catch (err) {
-      setScanError(err instanceof Error ? err.message : "Scanarea produsului a eșuat.");
+      setScanError(
+        err instanceof Error
+          ? err.message
+          : "Scanarea produsului a eșuat. Reîncarcă pagina."
+      );
     } finally {
       setOcrLoading(false);
     }
@@ -174,7 +284,7 @@ export function BrandSearchPanel({ initialResults = [], alternatives = {} }: Pro
     setScanError(null);
     setOcrLoading(true);
     try {
-      const { imageBase64, mimeType } = await fileToBase64(file);
+      const { imageBase64, mimeType } = await compressImageFile(file);
       const data = await postScan<ReceiptScanPayload>({
         scan: "receipt",
         imageBase64,
@@ -184,15 +294,34 @@ export function BrandSearchPanel({ initialResults = [], alternatives = {} }: Pro
       const magazin = data.magazin ?? "";
       const total = data.total ?? 0;
       const produse = data.produse ?? [];
-      const text = data.receiptText ?? buildKioskReceiptText(magazin, total, produse);
+      const adresa = data.adresa ?? "";
+      const dataBon = data.data_bon ?? "";
+      const text =
+        data.receiptText ??
+        buildKioskReceiptText(magazin, total, produse, dataBon, adresa || null);
 
       setReceiptMagazin(magazin);
+      setReceiptAdresa(adresa);
+      setReceiptDataBon(dataBon);
       setReceiptTotal(String(total));
       setReceiptProducts(produse);
+      setReceiptLocal(Boolean(data.este_chioc_local));
       setReceiptText(text);
-      await handleReceiptBonus(text);
+
+      const result = await applyReceiptScanBonus({
+        magazin,
+        adresa: adresa || null,
+        total,
+        dataBon: dataBon || null,
+        produse,
+        esteChiocLocal: Boolean(data.este_chioc_local),
+        rawText: text,
+      });
+      setBonusMsg(result.message);
     } catch (err) {
-      setScanError(err instanceof Error ? err.message : "Scanarea bonului a eșuat.");
+      setScanError(
+        err instanceof Error ? err.message : "Scanarea bonului a eșuat. Reîncarcă pagina."
+      );
     } finally {
       setOcrLoading(false);
     }
@@ -219,7 +348,7 @@ export function BrandSearchPanel({ initialResults = [], alternatives = {} }: Pro
         <input
           id="product-camera-input"
           type="file"
-          accept="image/*"
+          accept="image/*,image/jpeg,image/png,image/webp"
           capture="environment"
           className="hidden"
           onChange={(e) => void handleProductCamera(e)}
@@ -229,20 +358,25 @@ export function BrandSearchPanel({ initialResults = [], alternatives = {} }: Pro
             {ocrLoading ? "Se analizează poza…" : "Se caută…"}
           </p>
         ) : null}
-        {scanError ? <p className="text-sm text-red-600">{scanError}</p> : null}
+        {scanError ? (
+          <ScanErrorBanner message={scanError} onDismiss={() => setScanError(null)} />
+        ) : null}
         {productScanInfo ? (
           <div className="rounded-xl border border-zinc-200 bg-white p-3 text-sm text-zinc-800">
             <p>
               <span className="font-semibold">Brand detectat:</span> {productScanInfo.brand}
             </p>
             <p>
-              <span className="font-semibold">Românesc:</span>{" "}
-              {productScanInfo.este_romanesc ? "Da 🇷🇴" : "Nu"}
+              <span className="font-semibold">Tip card:</span> {productScanInfo.categorie_tip}
+              {productScanInfo.este_romanesc ? " · amprentă RO" : ""}
             </p>
             <p>
               <span className="font-semibold">Preț pe etichetă:</span>{" "}
               {productScanInfo.pret != null ? `${productScanInfo.pret.toFixed(2)} Lei` : "—"}
             </p>
+            {productScanInfo.motiv ? (
+              <p className="mt-1 text-xs text-zinc-500">{productScanInfo.motiv}</p>
+            ) : null}
           </div>
         ) : null}
       </div>
@@ -267,35 +401,33 @@ export function BrandSearchPanel({ initialResults = [], alternatives = {} }: Pro
       ) : null}
 
       <section className="space-y-3 rounded-2xl border border-zinc-200 bg-white p-4">
-        <h2 className="text-sm font-semibold text-zinc-800">Bon chioșc mic (OCR)</h2>
+        <h2 className="text-sm font-semibold text-zinc-800">Bon fiscal (OCR)</h2>
         <p className="text-xs text-zinc-500">
-          Fă poză la bon sau completează manual. Bonus +20 puncte Koson.
+          Poza trebuie să fie din ziua curentă pentru +20 Koson. Datele se salvează oricum.
         </p>
         <Input
           label="Magazin"
-          placeholder="ex: Chioșc Rahova"
+          placeholder="ex: Chioșc Rahova / La Cocoș"
           value={receiptMagazin}
-          onChange={(e) => {
-            const magazin = e.target.value;
-            setReceiptMagazin(magazin);
-            const total = Number(receiptTotal.replace(",", "."));
-            if (magazin && Number.isFinite(total) && total > 0) {
-              setReceiptText(buildKioskReceiptText(magazin, total, receiptProducts));
-            }
-          }}
+          onChange={(e) => setReceiptMagazin(e.target.value)}
+        />
+        <Input
+          label="Adresă (de pe bon)"
+          placeholder="opțional"
+          value={receiptAdresa}
+          onChange={(e) => setReceiptAdresa(e.target.value)}
+        />
+        <Input
+          label="Data bonului"
+          placeholder="YYYY-MM-DD sau ZZ.LL.AAAA"
+          value={receiptDataBon}
+          onChange={(e) => setReceiptDataBon(e.target.value)}
         />
         <Input
           label="Sumă totală (Lei)"
           placeholder="ex: 25.50"
           value={receiptTotal}
-          onChange={(e) => {
-            const totalStr = e.target.value;
-            setReceiptTotal(totalStr);
-            const total = Number(totalStr.replace(",", "."));
-            if (receiptMagazin && Number.isFinite(total) && total > 0) {
-              setReceiptText(buildKioskReceiptText(receiptMagazin, total, receiptProducts));
-            }
-          }}
+          onChange={(e) => setReceiptTotal(e.target.value)}
         />
         {receiptProducts.length > 0 ? (
           <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-zinc-800">
@@ -326,7 +458,7 @@ export function BrandSearchPanel({ initialResults = [], alternatives = {} }: Pro
         <input
           id="receipt-camera-input"
           type="file"
-          accept="image/*"
+          accept="image/*,image/jpeg,image/png,image/webp"
           capture="environment"
           className="hidden"
           onChange={(e) => void handleReceiptCamera(e)}
@@ -335,7 +467,9 @@ export function BrandSearchPanel({ initialResults = [], alternatives = {} }: Pro
           Verifică bon & acordă bonus
         </Button>
         {bonusMsg ? (
-          <p className={`text-sm ${bonusMsg.startsWith("+") ? "text-emerald-600" : "text-zinc-500"}`}>
+          <p
+            className={`text-sm ${bonusMsg.startsWith("+") ? "text-emerald-600" : "text-zinc-600"}`}
+          >
             {bonusMsg}
           </p>
         ) : null}

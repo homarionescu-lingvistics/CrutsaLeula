@@ -4,12 +4,12 @@ import {
   getBrandAlternative,
   searchBranduriRomanitate,
 } from "@/lib/piata/branduri-queries";
+import { upsertBrandFromGeminiScan } from "@/lib/piata/brand-upsert";
 import {
   buildReceiptText,
   geminiScanProduct,
   geminiScanReceipt,
 } from "@/lib/piata/gemini-scan";
-import { getGoogleAccessTokenForScan } from "@/lib/auth/google-token";
 import { buildWorthItAlternatives } from "@/lib/produse/trip-worth";
 import type { BrandRomanitate } from "@/lib/supabase/types";
 
@@ -117,8 +117,45 @@ async function runBrandSearch(q: string, lat?: number, lng?: number) {
     };
   }
 
-  const monitorRows = await searchPreturiMonitorFirst(normalized);
+  const brandResults = await searchBranduriRomanitate(normalized);
+  if (brandResults.length) {
+    const alternatives: Record<string, BrandRomanitate | null> = {};
+    await Promise.all(
+      brandResults.map(async (brand) => {
+        alternatives[brand.id] = await getBrandAlternative(brand);
+      })
+    );
 
+    const monitorRows = await searchPreturiMonitorFirst(normalized);
+    const monitorPrices = Object.fromEntries(
+      brandResults.map((item) => {
+        const match = monitorRows.find((row) =>
+          (row.product_name ?? "").toLowerCase().includes(normalized)
+        );
+        return [
+          item.id,
+          match
+            ? {
+                productId: match.product_id,
+                minPrice: Number(match.price),
+                maxPrice: Number(match.price),
+                storeCount: 1,
+                store_name: match.store_name ?? match.network_name,
+              }
+            : null,
+        ];
+      })
+    );
+
+    const tripAlternatives =
+      hasGeo && lat !== undefined && lng !== undefined && monitorRows.length
+        ? await buildWorthItAlternatives(monitorRows, lat, lng)
+        : [];
+
+    return { results: brandResults, alternatives, monitorPrices, tripAlternatives };
+  }
+
+  const monitorRows = await searchPreturiMonitorFirst(normalized);
   if (monitorRows.length) {
     const results = mapMonitorRowsToResults(monitorRows, normalized);
     const alternatives = Object.fromEntries(results.map((item) => [item.id, null]));
@@ -142,19 +179,34 @@ async function runBrandSearch(q: string, lat?: number, lng?: number) {
     return { results, alternatives, monitorPrices, tripAlternatives };
   }
 
-  const brandResults = await searchBranduriRomanitate(normalized);
-  const alternatives: Record<string, BrandRomanitate | null> = {};
-  await Promise.all(
-    brandResults.map(async (brand) => {
-      alternatives[brand.id] = await getBrandAlternative(brand);
-    })
-  );
-
   return {
-    results: brandResults,
-    alternatives,
+    results: [] as BrandRomanitate[],
+    alternatives: {} as Record<string, BrandRomanitate | null>,
     monitorPrices: {},
     tripAlternatives: [],
+  };
+}
+
+function friendlyGeminiError(err: unknown): { message: string; code?: string } {
+  const message = err instanceof Error ? err.message : "Scanarea a eșuat.";
+  if (message === "GEMINI_BUSY") {
+    return {
+      code: "GEMINI_BUSY",
+      message:
+        "Gemini e temporar aglomerat. Reîncarcă pagina și încearcă din nou peste câteva secunde.",
+    };
+  }
+  if (/GEMINI_API_KEY|is not set/i.test(message)) {
+    return {
+      code: "GEMINI_CONFIG",
+      message: "Configurația AI lipsește pe server. Reîncarcă pagina după ce adminul setează cheia.",
+    };
+  }
+  return {
+    code: "GEMINI_ERROR",
+    message: message.startsWith("Eroare Gemini")
+      ? "Nu am putut analiza poza acum. Reîncarcă pagina și încearcă din nou."
+      : message,
   };
 }
 
@@ -187,60 +239,53 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Lipsește imaginea." }, { status: 400 });
   }
 
-  const googleAuth = await getGoogleAccessTokenForScan();
-  if (!googleAuth) {
+  if (imageBase64.length > 6_000_000) {
     return NextResponse.json(
       {
-        error: "Autentifică-te cu Google pentru a scana. Contul tău Google acoperă cota AI.",
-        needsAuth: true,
+        error: "Imaginea e prea mare. Fă din nou poza sau alege o imagine mai mică.",
+        code: "IMAGE_TOO_LARGE",
       },
-      { status: 401 }
+      { status: 413 }
     );
   }
 
   try {
     if (scan === "product") {
-      const productScan = await geminiScanProduct(
-        imageBase64,
-        mimeType,
-        googleAuth.token
-      );
-      const searchPayload = await runBrandSearch(productScan.brand, lat, lng);
+      const productScan = await geminiScanProduct(imageBase64, mimeType);
+      const brand = await upsertBrandFromGeminiScan(productScan);
+      const alternative = await getBrandAlternative(brand);
+
       return NextResponse.json({
         ...productScan,
-        ...searchPayload,
+        results: [brand],
+        alternatives: { [brand.id]: alternative },
+        monitorPrices: {},
+        tripAlternatives: [],
+        lat,
+        lng,
       });
     }
 
     if (scan === "receipt") {
-      const receiptScan = await geminiScanReceipt(
-        imageBase64,
-        mimeType,
-        googleAuth.token
-      );
+      const receiptScan = await geminiScanReceipt(imageBase64, mimeType);
       return NextResponse.json({
         ...receiptScan,
         receiptText: buildReceiptText(
           receiptScan.magazin,
           receiptScan.total,
-          receiptScan.produse
+          receiptScan.produse,
+          receiptScan.data_bon,
+          receiptScan.adresa
         ),
       });
     }
 
     return NextResponse.json({ error: "Tip scanare necunoscut." }, { status: 400 });
   } catch (err) {
-    if (err instanceof Error && err.message === "GOOGLE_TOKEN_EXPIRED") {
-      return NextResponse.json(
-        {
-          error: "Sesiunea Google a expirat. Reconectează-te cu Google.",
-          needsAuth: true,
-        },
-        { status: 401 }
-      );
-    }
-
-    const message = err instanceof Error ? err.message : "Scanarea a eșuat.";
-    return NextResponse.json({ error: message }, { status: 500 });
+    const friendly = friendlyGeminiError(err);
+    return NextResponse.json(
+      { error: friendly.message, code: friendly.code },
+      { status: 500 }
+    );
   }
 }

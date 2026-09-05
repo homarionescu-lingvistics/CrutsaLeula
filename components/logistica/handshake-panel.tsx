@@ -21,20 +21,20 @@ export function HandshakePanel({ handshake, userId, listingTitle }: Props) {
   if (!isOwner && !isPartner) return null;
 
   return (
-    <div className="mt-2 rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-3 text-sm">
-      <p className="font-medium text-emerald-200">Handshake: {listingTitle}</p>
+    <div className="mt-2 rounded-xl border border-emerald-300 bg-emerald-50 p-3 text-sm">
+      <p className="font-medium text-emerald-900">Bate palma: {listingTitle}</p>
       {isOwner ? (
-        <p className="mt-1 text-xs text-slate-400">
+        <p className="mt-1 text-xs text-zinc-600">
           Cod pentru partener:{" "}
-          <span className="font-mono text-lg font-bold text-emerald-300">{handshake.code}</span>
+          <span className="font-mono text-lg font-bold text-emerald-700">{handshake.code}</span>
         </p>
       ) : null}
       <div className="mt-2 flex gap-2 text-xs">
-        <span className={ownerDone ? "text-emerald-400" : "text-slate-500"}>
+        <span className={ownerDone ? "text-emerald-700" : "text-zinc-500"}>
           Proprietar {ownerDone ? "✓" : "…"}
         </span>
-        <span className="text-slate-600">|</span>
-        <span className={partnerDone ? "text-emerald-400" : "text-slate-500"}>
+        <span className="text-zinc-400">|</span>
+        <span className={partnerDone ? "text-emerald-700" : "text-zinc-500"}>
           Partener {partnerDone ? "✓" : handshake.partner_id ? "…" : "—"}
         </span>
       </div>

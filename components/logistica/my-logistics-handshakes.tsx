@@ -22,8 +22,8 @@ export function MyLogisticsHandshakes({ listings, handshakes, userId }: Props) {
 
   if (logistics.length === 0) {
     return (
-      <p className="text-sm text-slate-400">
-        Niciun anunț la Strungă-Transport. Publică unul mai sus.
+      <p className="text-sm text-zinc-500">
+        Niciun anunț la Strungă cu rost. Publică unul mai sus.
       </p>
     );
   }
@@ -36,11 +36,11 @@ export function MyLogisticsHandshakes({ listings, handshakes, userId }: Props) {
         const code = codes[l.id];
 
         return (
-          <li key={l.id} className="rounded-xl bg-slate-900/80 px-3 py-3 text-sm">
+          <li key={l.id} className="rounded-xl border border-zinc-200 bg-white px-3 py-3 text-sm">
             <div className="flex items-start justify-between gap-2">
               <div className="min-w-0">
-                <p className="truncate font-medium text-slate-100">{l.title}</p>
-                <p className="text-xs text-slate-500">{STATUS_LABELS[l.status]}</p>
+                <p className="truncate font-medium text-zinc-900">{l.title}</p>
+                <p className="text-xs text-zinc-500">{STATUS_LABELS[l.status]}</p>
               </div>
               {showStart ? (
                 <form
@@ -55,19 +55,19 @@ export function MyLogisticsHandshakes({ listings, handshakes, userId }: Props) {
                   }}
                 >
                   <input type="hidden" name="listing_id" value={l.id} />
-                  <Button type="submit" variant="ghost" disabled={pending}>
-                    Handshake
+                  <Button type="submit" variant="ghost" className="border border-zinc-200" disabled={pending}>
+                    Bate palma
                   </Button>
                 </form>
               ) : null}
             </div>
             {code || hs?.code ? (
-              <p className="mt-2 text-xs text-emerald-300">
+              <p className="mt-2 text-xs text-emerald-700">
                 Cod: <span className="font-mono text-base">{code ?? hs?.code}</span>
               </p>
             ) : null}
             {hs && (hs.owner_id === userId || hs.partner_id === userId) ? (
-              <p className="mt-1 text-xs text-slate-500">
+              <p className="mt-1 text-xs text-zinc-500">
                 {hs.owner_confirmed_at && hs.partner_confirmed_at
                   ? "Finalizat ✓"
                   : "Așteaptă confirmarea ambelor părți"}

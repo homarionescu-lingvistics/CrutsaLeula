@@ -13,7 +13,7 @@ export function FeedList({ listings, emptyMessage, detailBase = "/piata" }: Prop
       <div className="rounded-2xl border border-dashed border-slate-700 bg-slate-900/40 px-4 py-12 text-center">
         <p className="text-sm text-slate-400">
           {emptyMessage ??
-            "Niciun anunț încă. Apasă microfonul sau mergi la Mânzare."}
+            "Niciun anunț încă. Mergi la Mânzare."}
         </p>
       </div>
     );

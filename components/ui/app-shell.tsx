@@ -1,4 +1,3 @@
-import { VoiceBar } from "@/components/ai/voice-bar";
 import { BottomNav } from "@/components/ui/bottom-nav";
 import { InstallBanner } from "@/components/pwa/install-banner";
 
@@ -21,11 +20,7 @@ export function AppShell({
               Economia RON
             </p>
           </div>
-          <span className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-emerald-700">
-            Beta
-          </span>
         </div>
-        <VoiceBar />
         <InstallBanner />
       </header>
       <main className={`px-4 pt-6 ${hideNav ? "pb-10" : "pb-28"}`}>

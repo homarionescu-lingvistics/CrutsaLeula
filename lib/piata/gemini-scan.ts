@@ -1,15 +1,43 @@
-const DEFAULT_MODEL = "gemini-3.5-flash";
+import { getGeminiModel } from "@/lib/ai/gemini";
 
-const PRODUCT_PROMPT =
-  "Analizează imaginea de produs de pe raft sau ambalaj. Răspunde STRICT JSON fără markdown: {\"brand\":\"Nume brand\",\"pret\":null,\"este_romanesc\":true}. pret este număr dacă apare pe etichetă, altfel null. este_romanesc este true dacă brandul/produsul pare românesc, altfel false.";
+const PRODUCT_PROMPT = `Analizează imaginea de produs (raft / ambalaj) din România.
+Clasifică brandul după criteriul Cardtip (ProductScoreCard Tip 1–5):
 
-const RECEIPT_PROMPT =
-  "Analizează bonul fiscal românesc din imagine. Extrage magazinul, suma totală plătită și lista produselor. Răspunde STRICT JSON fără markdown: {\"magazin\":\"Nume\",\"total\":12.34,\"produse\":[{\"nume\":\"Produs\",\"pret\":1.23}]}.";
+1 = „moartea țării” — produs dăunător / fără legătură cu economia locală productivă
+2 = „vinzi la străini” — brand străin FĂRĂ fabrică, producție sau salarii relevante în România (import pur / retail străin)
+3 = „mulți bani rămân pe glie” (GALBEN) — acționariat străin SAU brand internațional, DAR fabrica, producția și/sau salariile sunt în România (ex: Mărgăritar — fabrică RO → Tip 3, NU Tip 2)
+4 = „măcar banii finali ajung pe glie” — majoritar românesc (producție + lanț local), retenție RON ~60–80%
+5 = „libertatea țării” — brand/companie românească cu retenție ~100%
+
+Reguli stricte:
+- Dacă fabrica/producția/salariile sunt în RO → minim Tip 3 (galben), chiar dacă acționariatul e străin. Nu marca Tip 2.
+- Tip 2 doar când banii pleacă aproape integral în afară, fără amprentă productivă RO.
+
+Răspunde STRICT JSON fără markdown:
+{"brand":"Nume","pret":null,"categorie_tip":3,"procent_retentie_ron":40,"cui":null,"este_romanesc":true,"motiv":"explicație scurtă"}
+pret = număr dacă apare pe etichetă, altfel null. categorie_tip = 1|2|3|4|5.`;
+
+const RECEIPT_PROMPT = `Analizează bonul fiscal românesc din imagine.
+Extrage magazinul, adresa (dacă apare), data bonului, suma totală și lista produselor cu prețuri.
+
+Răspunde STRICT JSON fără markdown:
+{"magazin":"Nume magazin","adresa":"stradă / localitate sau null","data_bon":"YYYY-MM-DD","total":12.34,"produse":[{"nume":"Produs","pret":1.23}],"este_chioc_local":false}
+
+Reguli:
+- data_bon: citește data tipărită pe bon (nu data de azi). Folosește format YYYY-MM-DD.
+- este_chioc_local: true doar dacă pare chioșc / magazin de cartier / MF / abonament local FĂRĂ lanț corporatist (nu Mega Image, Kaufland, Profi, Lidl, Auchan, Penny etc.).
+- magazin: denumirea exactă de pe bon (ex: "MEGA IMAGE", "LA COCOȘ", "CHIOSC RAHOVA").`;
+
+export type CardTip = 1 | 2 | 3 | 4 | 5;
 
 export type ProductScanResult = {
   brand: string;
   pret: number | null;
+  categorie_tip: CardTip;
+  procent_retentie_ron: number | null;
+  cui: string | null;
   este_romanesc: boolean;
+  motiv: string | null;
 };
 
 export type ReceiptProduct = {
@@ -19,8 +47,11 @@ export type ReceiptProduct = {
 
 export type ReceiptScanResult = {
   magazin: string;
+  adresa: string | null;
+  data_bon: string | null;
   total: number;
   produse: ReceiptProduct[];
+  este_chioc_local: boolean;
 };
 
 export function parseGeminiJson<T>(raw: string): T {
@@ -37,54 +68,58 @@ export function parseGeminiJson<T>(raw: string): T {
   return JSON.parse(text) as T;
 }
 
-async function geminiGenerateWithOAuth(
-  accessToken: string,
+function normalizeTip(value: unknown): CardTip {
+  const n = Number(value);
+  if (n === 1 || n === 2 || n === 3 || n === 4 || n === 5) return n;
+  return 2;
+}
+
+async function geminiGenerateFromImage(
   systemInstruction: string,
   imageBase64: string,
   mimeType: string
 ): Promise<string> {
-  const modelName = process.env.GEMINI_MODEL?.trim() || DEFAULT_MODEL;
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent`;
+  const model = getGeminiModel();
+  const safeMime =
+    mimeType === "image/png" || mimeType === "image/webp" || mimeType === "image/gif"
+      ? mimeType
+      : "image/jpeg";
 
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      systemInstruction: { parts: [{ text: systemInstruction }] },
-      contents: [{ parts: [{ inlineData: { mimeType, data: imageBase64 } }] }],
-    }),
-  });
-
-  if (!response.ok) {
-    if (response.status === 401 || response.status === 403) {
-      throw new Error("GOOGLE_TOKEN_EXPIRED");
+  try {
+    const result = await model.generateContent([
+      { text: systemInstruction },
+      { inlineData: { mimeType: safeMime, data: imageBase64 } },
+    ]);
+    const text = result.response.text()?.trim() ?? "";
+    if (!text) throw new Error("Gemini nu a returnat un răspuns.");
+    return text;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (/404|Not Found/i.test(message)) {
+      throw new Error(
+        "Modelul Gemini nu este disponibil. Verifică GEMINI_API_KEY / GEMINI_MODEL."
+      );
     }
-    const detail = await response.text();
-    throw new Error(`Gemini API error (${response.status}): ${detail.slice(0, 200)}`);
+    if (/quota|rate|429|resource.exhausted|high demand/i.test(message)) {
+      throw new Error("GEMINI_BUSY");
+    }
+    throw new Error(`Eroare Gemini: ${message.slice(0, 180)}`);
   }
-
-  const payload = (await response.json()) as {
-    candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
-  };
-
-  const text = payload.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? "";
-  if (!text) throw new Error("Gemini nu a returnat un răspuns.");
-  return text;
 }
 
 export async function geminiScanProduct(
   imageBase64: string,
-  mimeType: string,
-  accessToken: string
+  mimeType: string
 ): Promise<ProductScanResult> {
-  const raw = await geminiGenerateWithOAuth(accessToken, PRODUCT_PROMPT, imageBase64, mimeType);
+  const raw = await geminiGenerateFromImage(PRODUCT_PROMPT, imageBase64, mimeType);
   const parsed = parseGeminiJson<{
     brand?: string;
     pret?: number | string | null;
+    categorie_tip?: number;
+    procent_retentie_ron?: number | string | null;
+    cui?: string | null;
     este_romanesc?: boolean;
+    motiv?: string | null;
   }>(raw);
 
   const brand = String(parsed.brand ?? "").trim().replace(/^["']|["']$/g, "");
@@ -98,27 +133,50 @@ export async function geminiScanProduct(
         ? pretRaw
         : Number(String(pretRaw).replace(",", "."));
 
+  const retRaw = parsed.procent_retentie_ron;
+  const retValue =
+    retRaw == null || retRaw === ""
+      ? null
+      : typeof retRaw === "number"
+        ? retRaw
+        : Number(String(retRaw).replace(",", "."));
+
+  const categorie_tip = normalizeTip(parsed.categorie_tip);
+  const este_romanesc =
+    parsed.este_romanesc != null
+      ? Boolean(parsed.este_romanesc)
+      : categorie_tip >= 3;
+
   return {
     brand,
     pret:
       pretValue != null && Number.isFinite(pretValue) && pretValue > 0 ? pretValue : null,
-    este_romanesc: Boolean(parsed.este_romanesc),
+    categorie_tip,
+    procent_retentie_ron:
+      retValue != null && Number.isFinite(retValue)
+        ? Math.min(100, Math.max(0, Math.round(retValue)))
+        : null,
+    cui: parsed.cui ? String(parsed.cui).trim() : null,
+    este_romanesc,
+    motiv: parsed.motiv ? String(parsed.motiv).trim() : null,
   };
 }
 
 export async function geminiScanReceipt(
   imageBase64: string,
-  mimeType: string,
-  accessToken: string
+  mimeType: string
 ): Promise<ReceiptScanResult> {
-  const raw = await geminiGenerateWithOAuth(accessToken, RECEIPT_PROMPT, imageBase64, mimeType);
+  const raw = await geminiGenerateFromImage(RECEIPT_PROMPT, imageBase64, mimeType);
   const parsed = parseGeminiJson<{
     magazin?: string;
+    adresa?: string | null;
+    data_bon?: string | null;
     total?: number | string;
     produse?: Array<{ nume?: string; pret?: number | string }>;
+    este_chioc_local?: boolean;
   }>(raw);
 
-  const magazin = String(parsed.magazin ?? "Chioșc").trim();
+  const magazin = String(parsed.magazin ?? "Magazin").trim();
   const total =
     typeof parsed.total === "number"
       ? parsed.total
@@ -148,15 +206,26 @@ export async function geminiScanReceipt(
     });
   }
 
-  return { magazin, total, produse };
+  const dataBon = parsed.data_bon ? String(parsed.data_bon).trim() : null;
+
+  return {
+    magazin,
+    adresa: parsed.adresa ? String(parsed.adresa).trim() : null,
+    data_bon: dataBon,
+    total,
+    produse,
+    este_chioc_local: Boolean(parsed.este_chioc_local),
+  };
 }
 
 export function buildReceiptText(
   magazin: string,
   total: number,
-  produse: ReceiptProduct[] = []
+  produse: ReceiptProduct[] = [],
+  dataBon?: string | null,
+  adresa?: string | null
 ): string {
-  const today = new Date().toLocaleDateString("ro-RO");
+  const dateLabel = dataBon?.trim() || new Date().toLocaleDateString("ro-RO");
   const productLines =
     produse.length > 0
       ? produse.map((p, index) => {
@@ -165,7 +234,8 @@ export function buildReceiptText(
         })
       : ["Articol 1"];
 
-  return [`Magazin: ${magazin}`, ...productLines, `Data: ${today}`, `Suma Totală: ${total.toFixed(2)}`].join(
-    "\n"
-  );
+  const lines = [`Magazin: ${magazin}`];
+  if (adresa) lines.push(`Adresa: ${adresa}`);
+  lines.push(...productLines, `Data: ${dateLabel}`, `Suma Totală: ${total.toFixed(2)}`);
+  return lines.join("\n");
 }

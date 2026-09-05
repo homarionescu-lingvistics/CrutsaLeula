@@ -45,7 +45,7 @@ export function MyListings({ listings }: { listings: Listing[] }) {
       {shown.length === 0 ? (
         <p className="text-sm text-slate-400">
           {listings.length === 0
-            ? "Nu ai anunțuri. Mergi la Mânzare sau folosește microfonul."
+            ? "Nu ai anunțuri. Mergi la Mânzare."
             : "Nimic pe acest filtru."}
         </p>
       ) : (

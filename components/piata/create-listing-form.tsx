@@ -15,7 +15,11 @@ export function saveListingDraft(draft: ListingDraft) {
   sessionStorage.setItem(DRAFT_KEY, JSON.stringify(draft));
 }
 
-export function CreateListingForm() {
+export function CreateListingForm({
+  triggerLabel = "+ Anunț nou",
+}: {
+  triggerLabel?: string;
+}) {
   const router = useRouter();
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
@@ -39,19 +43,19 @@ export function CreateListingForm() {
   }, []);
 
   return (
-    <div className="rounded-2xl border border-slate-800 bg-slate-900/60">
+    <div className="rounded-2xl border border-zinc-200 bg-white shadow-sm">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
         className="flex w-full items-center justify-between px-4 py-3 text-left"
       >
-        <span className="font-semibold text-emerald-400">+ Anunț nou</span>
-        <span className="text-xs text-slate-500">{open ? "Ascunde" : "Deschide"}</span>
+        <span className="font-semibold text-emerald-700">{triggerLabel}</span>
+        <span className="text-xs text-zinc-500">{open ? "Ascunde" : "Deschide"}</span>
       </button>
 
       {open ? (
         <form
-          className="space-y-3 border-t border-slate-800 px-4 pb-4 pt-3"
+          className="space-y-3 border-t border-zinc-200 px-4 pb-4 pt-3"
           action={(formData) => {
             setError(null);
             startTransition(async () => {
@@ -124,17 +128,17 @@ export function CreateListingForm() {
             type="url"
             placeholder="https://..."
           />
-          <label className="flex items-center gap-2 text-sm text-slate-300">
+          <label className="flex items-center gap-2 text-sm text-zinc-700">
             <input
               type="checkbox"
               name="barter_ok"
               defaultChecked={draft.barter_ok ?? true}
-              className="h-4 w-4 rounded border-slate-600"
+              className="h-4 w-4 rounded border-zinc-400"
             />
             Accept schimb / troc
           </label>
           {error ? (
-            <p className="rounded-xl bg-red-500/10 px-3 py-2 text-sm text-red-300">
+            <p className="rounded-xl bg-red-500/10 px-3 py-2 text-sm text-red-600">
               {error}
             </p>
           ) : null}
